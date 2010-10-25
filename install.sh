@@ -1,5 +1,8 @@
 #!/bin/bash
 
+echo "This script is still under development, please don't use it yet until fully tested"
+exit 1
+
 echo "Looking for git"
 if [ -z "$GIT" ]; then GIT=`which git`; fi
 if [ -z "$GIT" ]; then
