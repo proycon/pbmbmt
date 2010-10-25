@@ -1,0 +1,536 @@
+#!/usr/bin/python
+# PBMBMT: PHRASE-BASED MEMORY-BASED MACHINE TRANSLATOR
+# by Maarten van Gompel (proycon)
+#   proycon AT anaproy DOT NL
+#   http://proylt.anaproy.nl
+# Licensed under the GNU Public License v3
+
+import getopt
+import sys
+
+from corpus import Corpus
+from pynlpl.formats.giza import WordAlignment
+from pynlpl.formats.moses import PhraseTable
+from pynlpl.formats.taggerdata import Taggerdata
+from phraselist import PhraseList
+from markerlist import MarkerList
+import instancegenerator
+
+from os.path import isdir 
+from os import mkdir 
+import datetime
+
+def usage():
+    print >> sys.stderr,"pbmbmt-make-instances [mode] [options]"
+    print >> sys.stderr,"Mode:"
+    print >> sys.stderr,"\t--train=<a3_alignment_file>\tGenerate training instances using the specified alignment file"
+    print >> sys.stderr,"\t--test=<test_corpus_file>\tGenerate test instances from the specified corpus"
+    print >> sys.stderr,"\t--baseline=<test_corpus_file>\t\tProduce baseline data (phrasetable method only) (implies -n)"
+    print >> sys.stderr,"Method options (choose one):"
+    print >> sys.stderr,"\t-p <phrasetable_file>\t\tPhrase-table based generation (using Moses/GIZA++-generated phrase-table)"
+    print >> sys.stderr,"\t-l <phraselist_file>\t\tPhraselist based generation (in source language)"
+    print >> sys.stderr,"\t-L <phraselist_file>\t\tPhraselist based generation (in target language, optional)"
+    print >> sys.stderr,"\t-m <marker_file>\t\tMarker-based chunking using specified marker file (in source language)"
+    print >> sys.stderr,"\t-M <marker_file>\t\tMarker-based chunking using specified marker file (in target language, mandatory if -m is used!)"
+    print >> sys.stderr,"\t-w\t\tWord-based only"
+    print >> sys.stderr,"\t-n\t\tNew mode, uses only phrase-table for single words, no GIZA alignments are used whatsoever"
+    print >> sys.stderr,"Extra options:"
+    print >> sys.stderr,"\t-P\t\tOnly generate instances with phrases. Disable generation of word-based n-grams (default is to always generate them as well)"
+    print >> sys.stderr,"\t-o <infix>\tExtra infix for output files"
+    print >> sys.stderr,"\t-O\t\tWrite all to STDOUT"
+    print >> sys.stderr,"\t-F\t\tTreat focus phrase as single-feature (concatenates words with underscore)"
+    print >> sys.stderr,"\t-f <number>\t\tSet fixed amount of features"
+    #print >> sys.stderr,"\t-S\t\tCreate separate entries for context and focus"
+    print >> sys.stderr,"\t--nfeatleft=<value>\t\tNumber of left-hand context words in input features (default = 1)"
+    print >> sys.stderr,"\t--nfeatright=<value>\t\tNumber of right-hand context words in input features (default = 1)"
+    print >> sys.stderr,"\t--nclassleft=<value>\t\tNumber of left-hand context words in output class (default = 0)"
+    print >> sys.stderr,"\t--nclassright=<value>\t\tNumber of right-hand context words in output class (default = 0)"
+
+    print >> sys.stderr,"\t--traintaggerdata=<taggerdata-file>\tFile containing taggerdata for the source-side of the training corpus"
+    print >> sys.stderr,"\t--testtaggerdata=<taggerdata-file>\tFile containing taggerdata for the test corpus (THESE FOR THE MOMENT ONLY WORK WITH THE PHRASE-TABLE METHOD!)" #TODO: implement for others
+    print >> sys.stderr,"\t--npos=<value>\t\tContext size for left/right-hand PoS features (default = 0)"
+    print >> sys.stderr,"\t--nlemma=<value>\t\tContext size for left/right-hand PoS features (default = 0)"
+    print >> sys.stderr,"\t-R\t\tPhrase table is reversed (target,source), as opposed to (source, target)"
+    print >> sys.stderr,"\t-A\t\tOutput multiple equivalent training instances if multiple phrases are found in the phrase table, instead of only the best"
+    print >> sys.stderr,"\t-s\t\tWeighted-mode 1; consider alignment probabilities during classification"
+    print >> sys.stderr,"\t-S\t\tWeighted-mode 2; consider alignment probabilities during decoding"
+
+outfds = {}
+
+
+def main():
+
+    try:
+        opts, args = getopt.getopt(sys.argv[1:], "p:T:q:l:L:m:M:o:wPSOFf:RnsSA", ["help","train=","test=","nfeatleft=","nfeatright=","nclassleft=","nclassright=","npos=","nlemma=","traintaggerdata=","testtaggerdata=","baseline="])
+    except getopt.GetoptError, err:
+        # print help information and exit:
+        print str(err)
+        usage()
+        sys.exit(2)
+
+    sourcecorpus = targetcorpus = testcorpus = wordalignment = phrasetable = phraselist_source = phraselist_target = markerlist_source = markerlist_target = None
+    phrasetable_file = outputinfix = outputprefix = testout = trainout = ""
+    wordsonly = phrasesonly = separate = phrase_singlefeature = fixedfeatures = False
+    usealignprob = False
+    alignprobfeature = False
+    bestonly = True
+
+    nfeatleft = nfeatright = 1
+    nclassleft = nclassright = 0
+    npos = nlemma = 0
+    traintaggerdata = testtaggerdata = None
+    minphraselength = 2 #the default, use phrasetables only for n>1
+
+    TRAIN = TEST = BASELINE = False
+    quiet = to_stdout = False
+
+
+    reversed_phrasetable = False
+
+    for o, a in opts:
+        if o == "--train":            
+            wordalignment = WordAlignment(a)
+            TRAIN = True
+            outputprefix = a.split(".")[0]
+        elif o == "--test":
+            testcorpus = Corpus(a)
+            TEST = True
+            outputprefix = a.split(".")[0]
+        elif o == "--baseline":
+            minphraselength = 1 #-n
+            testcorpus = Corpus(a)
+            BASELINE = True
+            outputprefix = a.split(".")[0]
+        elif o == "-o":
+            outputinfix = a
+        elif o == "-p":
+            phrasetable_file = a
+        elif o == "-R":
+            reversed_phrasetable = True
+        elif o == "-l":
+            phraselist_source = PhraseList(a)
+        elif o == "-L":
+            phraselist_target = PhraseList(a)
+        elif o == "-m":
+            markerlist_source = MarkerList(a)
+        elif o == "-M":
+            markerlist_target = MarkerList(a)
+        elif o == "-w":
+            wordsonly = True
+        elif o == "-P":
+            phrasesonly = True
+        elif o == "-S":
+            separate = True
+        elif o == "-q":
+            quiet = True
+        elif o == "-O":
+            to_stdout = True
+        elif o == "-F":
+            phrase_singlefeature = True
+        elif o == "-f":
+            if (int(a) == 1):
+                    phrase_singlefeature = True                
+            else:
+                fixedfeatures = int(a)
+        elif o == '-n':
+            phrasesonly = True
+            minphraselength = 1
+        elif o == '-s':
+            usealignprob = True
+        elif o == '-S':
+            alignprobfeature = True
+        elif o == '-a':
+            bestonly = False
+        elif o == "--nfeatleft":
+            nfeatleft = int(a)
+        elif o == "--nfeatright":
+            nfeatright = int(a)
+        elif o == "--nclassleft":
+            nclassleft = int(a)
+        elif o == "--nclassright":
+            nclassright = int(a)
+        elif o == "--npos":
+            npos = int(a)
+        elif o == "--nlemma":
+            nlemma = int(a)
+        elif o == "--traintaggerdata":
+            traintaggerdata = Taggerdata(a)
+        elif o == "--testtaggerdata":
+            testtaggerdata = Taggerdata(a)
+        elif o in ("-h", "--help"):
+            usage()
+            sys.exit()
+        else:
+            assert False, "unhandled option: %s" % o
+
+    if outputinfix:
+        outputprefix += "." + outputinfix
+
+    if not (TRAIN or TEST or BASELINE):
+        usage()
+        sys.exit(1)
+
+    if to_stdout:
+        outputprefix = False
+    else:
+        if not isdir(outputprefix):
+            mkdir(outputprefix)
+
+    if phrasetable_file:
+        if not quiet:
+            print >> sys.stderr, "Loading phrase-table into memory (this might take a while and can take a lot of memory!)..."
+        phrasetable = PhraseTable(phrasetable_file,quiet,reversed_phrasetable)
+
+        if TRAIN:
+            train_phrasetable(wordalignment, phrasetable,phrasesonly, quiet, nfeatleft,nfeatright,nclassleft,nclassright,npos,nlemma,traintaggerdata,outputprefix,phrase_singlefeature,fixedfeatures, minphraselength, bestonly, usealignprob, alignprobfeature)
+        if TEST:
+            test_phrasetable(testcorpus, phrasetable,phrasesonly, quiet, nfeatleft,nfeatright,npos,nlemma,testtaggerdata, outputprefix,phrase_singlefeature,fixedfeatures, minphraselength, usealignprob, alignprobfeature)
+        if BASELINE:
+            baseline_phrasetable(testcorpus, phrasetable,phrasesonly, quiet, nfeatleft,nfeatright,npos,nlemma,testtaggerdata, outputprefix,phrase_singlefeature,fixedfeatures, minphraselength, alignprobfeature)
+    elif phraselist_source:
+        if TRAIN:
+            train_phraselist(wordalignment, phraselist_source, phraselist_target,phrasesonly, quiet, nfeatleft,nfeatright,nclassleft,nclassright,outputprefix,phrase_singlefeature,fixedfeatures)
+        if TEST:
+            test_phraselist(testcorpus, phraselist_source,phrasesonly, quiet, nfeatleft,nfeatright,outputprefix,phrase_singlefeature,fixedfeatures)
+
+    elif markerlist_source and markerlist_target and TRAIN:
+        train_markerbased(wordalignment, markerlist_source, markerlist_target,phrasesonly, quiet, nfeatleft,nfeatright,nclassleft,nclassright,outputprefix,phrase_singlefeature,fixedfeatures)
+    elif markerlist_source and TEST:
+        test_markerbased(testcorpus, markerlist_source, phrasesonly, quiet, nfeatleft,nfeatright,outputprefix,phrase_singlefeature,fixedfeatures)
+    elif wordsonly:        
+        if TRAIN:
+            train_wordsonly(wordalignment, quiet, nfeatleft,nfeatright,nclassleft,nclassright,npos,nlemma,traintaggerdata,outputprefix,phrase_singlefeature,fixedfeatures)
+        if TEST:
+            test_wordsonly(testcorpus, quiet, nfeatleft,nfeatright,npos,nlemma,testtaggerdata,outputprefix,phrase_singlefeature,fixedfeatures)
+    else:
+        usage()        
+        sys.exit(1)
+
+def output(line, outputprefix, mode, nfeatleft, nfocus, nfeatright,nclassleft=0,nclassright=0, phrase_singlefeature=False, fixedfeatures=False):
+    global outfds
+    if not outputprefix:
+        print line 
+    else:            
+        if phrase_singlefeature:
+            infix = "P"
+        elif fixedfeatures:
+            infix = "F"
+        else:
+            infix = str(nfocus)
+
+        if mode == "train":
+            filename = outputprefix + "." + mode + "." + str(nfeatleft) + infix + str(nfeatright) + "." + str(nclassleft) + "X" + str(nclassright) + ".inst"
+        elif mode == "test":
+            filename = outputprefix + "." + mode + "." + str(nfeatleft) + infix + str(nfeatright) + ".inst"
+        elif mode == "baseline" or output == "direct":
+            filename = outputprefix + ".test." + str(nfeatleft) + infix + str(nfeatright) + ".inst.DIRECT.out"
+        else:
+            print >> sys.stderr, "output(): Unsupported mode"
+    
+        if filename in outfds:
+            outfds[filename].write(line + "\n")
+        else:
+            outfds[filename] = open(outputprefix + "/" + filename,"w")
+            outfds[filename].write(line + "\n")
+
+##########################################################################################
+# TRAIN/TEST FUNCTIONS
+##########################################################################################
+
+def train_wordsonly(wordalignment, quiet, nfeatleft,nfeatright,nclassleft,nclassright,npos,nlemma,traintaggerdata,outputprefix,phrase_singlefeature,fixedfeatures):
+    if not quiet:
+        print >> sys.stderr, "Generating only word-based instances for training"
+
+    linenum = instances = 0
+    for sourcewords, targetwords, alignment in wordalignment:
+        if not quiet:
+            linenum += 1
+            if (linenum % 10000) == 0:
+                print >> sys.stderr, "Generating training instances: @%d\t\t(%d instances thus-far)" % (linenum, instances), "\t(" + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + ")"
+        if traintaggerdata:
+            taggeddata = traintaggerdata.align(sourcewords, traintaggerdata.next())
+            # [ (word,lemma,pos, index, multiword? ) ]
+            #lemmas = [ w[1] for w in taggeddata ]
+            #pos = [ w[2] for w in taggeddata ]
+        else:
+            taggeddata = None
+
+
+        #generate word based instances
+        for i in xrange(0,len(sourcewords)):
+            if alignment[i] != None:
+                instance, nfocus = instancegenerator.make_train_ngram(sourcewords,targetwords,i,1,alignment[i],1,nfeatleft,nfeatright,nclassleft,nclassright,True, phrase_singlefeature, fixedfeatures,npos,nlemma,taggeddata)
+                instances += 1    
+                output(instance, outputprefix, "train", nfeatleft,nfocus, nfeatright,nclassleft, nclassright,phrase_singlefeature,fixedfeatures)
+
+def test_wordsonly(testcorpus, quiet,nfeatleft,nfeatright,outputprefix,npos,nlemma,testtaggerdata,phrase_singlefeature,fixedfeatures):
+    if not quiet:
+        print >> sys.stderr, "Generating only word-based instances for testing"
+
+    linenum = instances = 0
+    for line in testcorpus.readline():
+        if not quiet:
+            linenum += 1
+            if (linenum % 1000) == 0:
+                print >> sys.stderr, "Generating test instances: @%d\t\t(%d instances thus-far)" % (linenum, instances)
+
+        words = line.split(" ")
+        if testtaggerdata:
+            taggeddata = testtaggerdata.align(words, testtaggerdata.next())
+            # [ (word,lemma,pos, index, multiword? ) ]
+            #lemmas = [ w[1] for w in taggeddata ]
+            #pos = [ w[2] for w in taggeddata ]
+        else:
+            taggeddata = None
+
+
+        #generate word based instances
+        for i in xrange(0,len(words)):
+            instance, nfocus = instancegenerator.make_test_ngram(words,i,1,nfeatleft,nfeatright, True, phrase_singlefeature,fixedfeatures,npos,nlemma,taggeddata)
+            instances += 1    
+            output(instance, outputprefix, "test", nfeatleft,nfocus, nfeatright,0,0,phrase_singlefeature,fixedfeatures)
+
+
+def train_phrasetable(wordalignment, phrasetable, phrasesonly, quiet, nfeatleft,nfeatright,nclassleft,nclassright,npos,nlemma,traintaggerdata,outputprefix,phrase_singlefeature,fixedfeatures,minphraselength, bestonly, usealignprob, alignprobfeature):
+    if not quiet:
+        print >> sys.stderr, "Generate training instances using Phrase-Table..."        
+
+    MAXPHRASELENGTH = 6
+
+    #iterate over each sentence/alignment pair
+    linenum = 0
+    instances = 0
+    for sourcewords, targetwords, alignment in wordalignment:
+        if not quiet:
+            linenum += 1
+            if (linenum % 10000) == 0:
+                print >> sys.stderr, "Generating training instances: @%d\t\t(%d instances thus-far)" % (linenum, instances)
+        if traintaggerdata:
+            taggeddata = traintaggerdata.align(sourcewords, traintaggerdata.next())
+            # [ (word,lemma,pos, index, multiword? ) ]
+            #lemmas = [ w[1] for w in taggeddata ]
+            #pos = [ w[2] for w in taggeddata ]
+        else:
+            taggeddata = None
+
+
+        #search for aligned phrases based on Phrase Table and Alignment model
+        for begin, length, tbegin, tlength, Pst, Pts in instancegenerator.get_train_phrases_phrasetable(sourcewords,targetwords,alignment,phrasetable, True, MAXPHRASELENGTH, minphraselength, bestonly):
+            #make n-grams
+            try:
+                score = Pts
+            except:
+                score = 0
+
+            instance, nfocus =  instancegenerator.make_train_ngram(sourcewords,targetwords,begin,length,tbegin,tlength, nfeatleft,nfeatright,nclassleft,nclassright, True, phrase_singlefeature, fixedfeatures, npos, nlemma, taggeddata,score, usealignprob, alignprobfeature)
+            instances += 1
+            output(instance, outputprefix, "train", nfeatleft,nfocus, nfeatright,nclassleft, nclassright,phrase_singlefeature,fixedfeatures)
+
+        if not phrasesonly and minphraselength != 1:
+            if usealignprob:                
+                raise Exception("Can't include alignment probability if GIZA word alignments are used: -s can only be used with -n option!")
+            #generate word based instances as well
+            for i in xrange(0,len(sourcewords)):
+                if alignment[i] != None:
+                    instance, nfocus = instancegenerator.make_train_ngram(sourcewords,targetwords,i,1,alignment[i],1,nfeatleft,nfeatright,nclassleft,nclassright,True, phrase_singlefeature, fixedfeatures, npos, nlemma, taggeddata,score, usealignprob, alignprobfeature)
+                    instances += 1
+                    output(instance, outputprefix, "train", nfeatleft,nfocus, nfeatright,nclassleft, nclassright,phrase_singlefeature,fixedfeatures)
+
+
+        
+
+def test_phrasetable(testcorpus,phrasetable, phrasesonly, quiet, nfeatleft,nfeatright,npos,nlemma,testtaggerdata, outputprefix,phrase_singlefeature,fixedfeatures,minphraselength, usealignprob, alignprobfeature):
+    if not quiet:
+        print >> sys.stderr, "Generating test instances using Phrase-Table..."
+
+    
+    MAXPHRASELENGTH = 6
+
+    #generate phrase based instances
+    linenum = 0
+    for line in testcorpus.readline():
+        if not quiet:
+            linenum += 1
+            if (linenum % 1000) == 0:
+                print >> sys.stderr, "Generating test instances: @%d" % (linenum)
+
+        words = line.split(" ")
+        if testtaggerdata:
+            taggeddata = testtaggerdata.align(words, testtaggerdata.next())
+            # [ (word,lemma,pos, index, multiword? ) ]
+            #lemmas = [ w[1] for w in taggeddata ]
+            #pos = [ w[2] for w in taggeddata ]
+        else:
+            taggeddata = None
+
+
+        for begin, length,Pst,Pts in instancegenerator.get_test_phrases_phrasetable(words,phrasetable, MAXPHRASELENGTH, minphraselength):
+            try:
+                score = Pst * Pts
+            except:
+                score = 0
+            instance, nfocus = instancegenerator.make_test_ngram(words,begin,length, nfeatleft,nfeatright,True, phrase_singlefeature, fixedfeatures, npos, nlemma, taggeddata, score, usealignprob, alignprobfeature)
+            output(instance, outputprefix, "test", nfeatleft,nfocus, nfeatright,0,0,phrase_singlefeature,fixedfeatures)
+
+        if not phrasesonly and minphraselength != 1:
+            #generate word based instances as well
+            if alignprobfeature:                
+                raise Exception("Can't include alignment probability if GIZA word alignments are used: -S can only be used with -n option!")
+            for i in xrange(0,len(words)):
+                instance, nfocus = instancegenerator.make_test_ngram(words,i,1,nfeatleft,nfeatright, True, phrase_singlefeature, fixedfeatures, npos, nlemma, taggeddata)
+                output(instance, outputprefix, "test", nfeatleft,nfocus, nfeatright,0,0,phrase_singlefeature,fixedfeatures)
+
+def baseline_phrasetable(testcorpus,phrasetable, phrasesonly, quiet, nfeatleft,nfeatright,npos,nlemma,testtaggerdata, outputprefix,phrase_singlefeature,fixedfeatures, minphraselength, alignprobfeature):
+    if not quiet:
+        print >> sys.stderr, "Generating classifier-bypassing baseline instances using Phrase-Table..."
+    
+    MAXPHRASELENGTH = 6
+
+    #generate phrase based instances
+    linenum = 0
+    for line in testcorpus.readline():
+        if not quiet:
+            linenum += 1
+            if (linenum % 1000) == 0:
+                print >> sys.stderr, "Generating baseline instances: @%d" % (linenum)
+
+        words = line.split(" ")
+        if testtaggerdata:
+            taggeddata = testtaggerdata.align(words, testtaggerdata.next())
+            # [ (word,lemma,pos, index, multiword? ) ]
+            #lemmas = [ w[1] for w in taggeddata ]
+            #pos = [ w[2] for w in taggeddata ]
+        else:
+            taggeddata = None
+
+
+        for begin, length, translations in instancegenerator.get_baseline_phrasetable(words,phrasetable, MAXPHRASELENGTH, minphraselength):
+            instance, nfocus = instancegenerator.make_baseline_ngram(words,translations, begin,length, nfeatleft,nfeatright,True, phrase_singlefeature, fixedfeatures, npos, nlemma, taggeddata)
+            output(instance, outputprefix, "baseline", nfeatleft,nfocus, nfeatright,0,0,phrase_singlefeature,fixedfeatures)
+
+
+        #if not phrasesonly and minphraselength != 1:
+        #    #generate word based instances as well
+        #    if alignprobfeature:                
+        #        raise Exception("Can't include alignment probability if GIZA word alignments are used: -S can only be used with -n option!")
+        #    for i in xrange(0,len(words)):
+        #        instance, nfocus = instancegenerator.make_test_ngram(words,i,1,nfeatleft,nfeatright, True, phrase_singlefeature, fixedfeatures, npos, nlemma, taggeddata)
+        #        output(instance, outputprefix, "baseline", nfeatleft,nfocus, nfeatright,0,0,phrase_singlefeature,fixedfeatures)
+
+def train_phraselist(wordalignment, phraselist_source, phraselist_target, phrasesonly, quiet, nfeatleft,nfeatright,nclassleft,nclassright,outputprefix,phrase_singlefeature,fixedfeatures):
+    if not quiet:
+        print >> sys.stderr, "Generate training instances using Phrase-Lists..."        
+
+    MAXPHRASELENGTH = 6
+
+    #iterate over each sentence/alignment pairc
+    linenum = 0
+    instances = 0
+    for sourcewords, targetwords, alignment in wordalignment:
+        if not quiet:
+            linenum += 1
+            if (linenum % 10000) == 0:
+                print >> sys.stderr, "Generating training instances: @%d\t\t(%d instances thus-far)" % (linenum, instances)
+        #search for aligned phrases based on Phrase Table and Alignment model
+        for begin, length, tbegin, tlength in instancegenerator.get_train_phrases_phraselist(sourcewords,targetwords,alignment,phraselist_source, phraselist_target, MAXPHRASELENGTH):
+            #make n-grams
+            instance, nfocus =  instancegenerator.make_train_ngram(sourcewords,targetwords,begin,length,tbegin,tlength, nfeatleft,nfeatright,nclassleft,nclassright, True, phrase_singlefeature, fixedfeatures)
+            instances += 1    
+            output(instance, outputprefix, "train", nfeatleft,nfocus, nfeatright,nclassleft, nclassright,phrase_singlefeature,fixedfeatures)    
+
+
+        if not phrasesonly:
+            #generate word based instances as well
+            for i in xrange(0,len(sourcewords)):
+                if alignment[i] != None:
+                    instance, nfocus = instancegenerator.make_train_ngram(sourcewords,targetwords,i,1,alignment[i],1,nfeatleft,nfeatright,nclassleft,nclassright,True, phrase_singlefeature, fixedfeatures)
+                    instances += 1    
+                    output(instance, outputprefix, "train", nfeatleft,nfocus, nfeatright,nclassleft, nclassright,phrase_singlefeature,fixedfeatures)        
+
+def test_phraselist(testcorpus, phraselist_source, phrasesonly, quiet, nfeatleft,nfeatright,outputprefix,phrase_singlefeature,fixedfeatures):
+    if not quiet:
+        print >> sys.stderr, "Generating test instances using Phrase-List..."
+
+    MAXPHRASELENGTH = 6
+
+    #generate phrase based instances
+    linenum = 0
+    for line in testcorpus.readline():
+        if not quiet:
+            linenum += 1
+            if (linenum % 1000) == 0:
+                print >> sys.stderr, "Generating test instances: @%d" % (linenum)
+
+        words = line.split(" ")
+        for begin, length in instancegenerator.get_test_phrases_phraselist(words,phraselist_source, MAXPHRASELENGTH):
+            instance, nfocus = instancegenerator.make_test_ngram(words,begin,length, nfeatleft,nfeatright,True, phrase_singlefeature, fixedfeatures)
+            output(instance, outputprefix, "test", nfeatleft,nfocus, nfeatright,0,0,phrase_singlefeature,fixedfeatures)
+
+        if not phrasesonly:
+            #generate word based instances as well
+            for i in xrange(0,len(words)):
+                instance, nfocus = instancegenerator.make_test_ngram(words,i,1,nfeatleft,nfeatright, True, phrase_singlefeature, fixedfeatures)
+                output(instance, outputprefix, "test", nfeatleft,nfocus, nfeatright,0,0,phrase_singlefeature,fixedfeatures)
+
+def train_markerbased(wordalignment, markerlist_source, markerlist_target, phrasesonly, quiet, nfeatleft,nfeatright,nclassleft,nclassright,outputprefix,phrase_singlefeature,fixedfeatures):
+    if not quiet:
+        print >> sys.stderr, "Generate training instances using Markers..."        
+
+    MAXPHRASELENGTH = 9
+
+    #iterate over each sentence/alignment pair
+    linenum = 0
+    instances = 0
+    for sourcewords, targetwords, alignment in wordalignment:
+        if not quiet:
+            linenum += 1
+            if (linenum % 10000) == 0:
+                print >> sys.stderr, "Generating training instances: @%d\t\t(%d instances thus-far)" % (linenum, instances)
+        #search for aligned phrases based on Phrase Table and Alignment model
+        for begin, length, tbegin, tlength in instancegenerator.get_train_phrases_markerbased(sourcewords,targetwords,alignment,markerlist_source,markerlist_target, MAXPHRASELENGTH):
+            #make n-grams
+            instance, nfocus =  instancegenerator.make_train_ngram(sourcewords,targetwords,begin,length,tbegin,tlength, nfeatleft,nfeatright,nclassleft,nclassright, True, phrase_singlefeature, fixedfeatures)
+            instances += 1    
+            output(instance, outputprefix, "train", nfeatleft,nfocus, nfeatright,nclassleft, nclassright,phrase_singlefeature,fixedfeatures)    
+
+        if not phrasesonly:
+            #generate word based instances as well
+            for i in xrange(0,len(sourcewords)):
+                if alignment[i] != None:
+                    instance, nfocus = instancegenerator.make_train_ngram(sourcewords,targetwords,i,1,alignment[i],1,nfeatleft,nfeatright,nclassleft,nclassright,True, phrase_singlefeature, fixedfeatures)
+                    instances += 1    
+                    output(instance, outputprefix, "train", nfeatleft,nfocus, nfeatright,nclassleft, nclassright,phrase_singlefeature,fixedfeatures)    
+
+def test_markerbased(testcorpus, markerlist_source, phrasesonly, quiet, nfeatleft,nfeatright,outputprefix,phrase_singlefeature,fixedfeatures):
+    if not quiet:
+        print >> sys.stderr, "Generate testing instances using Markers..."    
+
+    MAXPHRASELENGTH = 9
+
+    #generate phrase based instances
+    linenum = 0
+    for line in testcorpus.readline():
+        if not quiet:
+            linenum += 1
+            if (linenum % 1000) == 0:
+                print >> sys.stderr, "Generating test instances: @%d" % (linenum)
+
+        words = line.split(" ")
+        for begin, length in instancegenerator.get_test_phrases_markerbased(words,markerlist_source,MAXPHRASELENGTH ):
+            #print "DEBUG: ", words[begin:begin+length]
+            instance, nfocus = instancegenerator.make_test_ngram(words,begin,length, nfeatleft,nfeatright,True, phrase_singlefeature, fixedfeatures)
+            output(instance, outputprefix, "test", nfeatleft,nfocus,nfeatright,0,0,phrase_singlefeature,fixedfeatures)
+
+
+        if not phrasesonly:
+            #generate word based instances as well
+            for i in xrange(0,len(words)):
+                instance, nfocus = instancegenerator.make_test_ngram(words,i,1,nfeatleft,nfeatright, True, phrase_singlefeature)
+                output(instance, outputprefix, "test", nfeatleft,nfocus,nfeatright, 0,0,phrase_singlefeature,fixedfeatures)
+
+
+##########################################################################################3
+
+if __name__ == "__main__":
+    main()
+

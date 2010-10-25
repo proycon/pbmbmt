@@ -1,0 +1,96 @@
+#!/usr/bin/python
+# PBMBMT: PHRASE-BASED MEMORY-BASED MACHINE TRANSLATOR
+# by Maarten van Gompel (proycon)
+#   proycon AT anaproy DOT NL
+#   http://proylt.anaproy.nl
+# Licensed under the GNU Public License v3
+# ---------------------------
+# Extracts common phrases (n-grams) from one or more corpora
+
+import sys
+import fileinput
+import instancegenerator
+
+MAXLENGTH = 6
+MINOCCURRENCES = 2
+
+
+if len(sys.argv) < 2 or sys.argv[1] == "-h":
+	print >> sys.stderr, "Make a phrase list by extracting common phrases, by Maarten van Gompel (proycon)"
+	print >> sys.stderr, "\tSyntax: pbmbmt-make-phraselist.py <corpus-file> [minoccurrences] [maxlength]"
+	print >> sys.stderr, "\tDefaults: minimum occurrences = 2, maximum phrase length = 10"
+	print >> sys.stderr, "\tOutput: phrase-count   phrase-frequency     n   phrase"
+	sys.exit(1)
+
+f = open(sys.argv[1])
+
+if len(sys.argv) >= 3:
+	MINOCCURRENCES = int(sys.argv[2])
+
+if len(sys.argv) >= 4:
+	MAXLENGTH = int(sys.argv[3])
+
+ngramtable = {}
+ngramcount = {}
+linecount = 0
+for n in xrange(2,MAXLENGTH+1):
+	table = {}
+	contextsize = (n-1)/2
+
+	#Count all n-grams
+	ngramcount[n] = 0
+	print >> sys.stderr, "Counting ",n,"-grams ..."
+	f.seek(0)
+	for i, line in enumerate(f):
+		line = line.strip()
+		if i > 0 and i % 1000 == 0:
+			if linecount > 0:
+				print >> sys.stderr, "Counting ",n,"-grams @", i,"/",linecount, "\t(",ngramcount[n]," types)"
+			else:
+				print >> sys.stderr, "Counting ",n,"-grams @", i, "\t(",ngramcount[n]," types)"
+
+		words = line.strip().split(" ")
+
+		for ngram in instancegenerator.get_ngrams(words,n,False):
+			ngram_key = " ".join(ngram)
+			if ngram_key in table:
+				table[ngram_key] += 1
+			elif n == 2:
+				table[ngram_key] = 1
+				ngramcount[n] += 1
+			elif n > 2:		
+				#use n-1-gram model to check if this ngram option can be discarded
+				add = True
+				for nm1gram in instancegenerator.get_ngrams(ngram,n - 1,False):
+					nm1gram_key = " ".join(nm1gram)
+				 	try:
+						if ngramtable[n-1][nm1gram_key] < MINOCCURRENCES:
+							add = False
+							break
+					except:
+						add = False
+						break
+				if add:
+					table[ngram_key] = 1
+					ngramcount[n] += 1
+	linecount = i
+
+	#Retain only ngrams with a high enough count
+	ngramtable[n] = {}
+	ngramcount[n] = 0 
+	for ngram, freq in table.iteritems():
+		if freq >= MINOCCURRENCES:
+			if n < MAXLENGTH:
+				ngramcount[n] += 1
+				ngramtable[n][ngram] = freq
+			print "%d\t%d\t%s" % (freq,n,ngram)
+
+	if (n-1 >= 2):
+		del ngramtable[n-1]
+
+#final statistics
+typecount = 0
+for n in xrange(2,MAXLENGTH+1):
+	typecount += ngramcount[n]
+	print >> sys.stderr, "%d-gram types: %d" % (n, ngramcount[n])
+print >> sys.stderr, "Total types: %d" % (typecount)

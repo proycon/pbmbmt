@@ -1,0 +1,1314 @@
+#!/usr/bin/python
+# PBMBMT: PHRASE-BASED MEMORY-BASED MACHINE TRANSLATOR: Decoder
+# by Maarten van Gompel (proycon)
+#   proycon AT anaproy DOT NL
+#   http://proylt.anaproy.nl
+# Licensed under the GNU Public License v3
+
+import getopt
+import sys
+import math
+import time
+from os.path import isdir
+from glob import iglob
+
+
+from pynlpl.lm.lm import SimpleLanguageModel
+from pynlpl.lm.srilm import SRILM
+from pynlpl.lm.client import LMClient
+from pynlpl.search import AbstractSearchState, BeamSearch
+from pynlpl.statistics import Distribution
+from pynlpl.formats.timbl import TimblOutput
+from pynlpl.formats.moses import PhraseTable
+
+
+
+
+VERSION = '0.33.0'
+
+DEBUG=0
+DISTORTION_CONSTANT=0.25
+PTRANSLATION_THRESHOLD = 0.8
+PTRANSITION_BREAKOFF = 10
+PTRANSLATION_WEIGHT = 1
+INITIAL_HYPOTHESIS_ONLY = False
+MAX_SWAP_DISTANCE=5
+DUPLICATES = False # allow duplicates on the fringe?
+DECODE_BREAKOFF=0 #PBMBMT 0.32.1  #will be set to fragbeamsize later
+SIMPLE_SOLSEARCH = True
+WOPR_PORT = 0
+IGNOREERRORS = False
+
+phrasetable = None
+
+ALIGNPROBDEFAULT = 0.01
+
+NFEATLEFT = None #not sure if I like this being global, but we'll live with it for now
+NFEATRIGHT = None
+
+USEENTROPYSCORE = True
+
+lm = None
+
+def usage():
+    print >> sys.stderr,"Syntax: pbmbmt-decode -t <Test Corpus> -o <name-infix> [ -l <SRILM Language Model> | -L <LM port>]"
+    print >> sys.stderr,"Optional parameters:"
+    print >> sys.stderr,"\t-b [beamsize=1] - Beamsize for core decoder"
+    print >> sys.stderr,"\t-f [beamsize=20] - Beamsize for fragmentation search"
+    print >> sys.stderr,"\t-d [0 <= debug-level < 10=0]"
+    print >> sys.stderr,"\t-s [index of first sentence to start decoding=0]"
+    print >> sys.stderr,"\t-e [index of last sentence for decoder=9999999]"
+    print >> sys.stderr,"\t-D [DISTORTION CONSTANT=0.25] - The lower the value, the less likely the decoder is to swap the location of fragments"
+    print >> sys.stderr,"\t-B [PTRANSLATION_THRESHOLD=0.8] - Only hypothesis fragments with a translation probability higher or equal than B% of the maximum translation probability will be considered. "
+    print >> sys.stderr,"\t-W [PTRANSLATION_WEIGHT=3] - Translation probability is raised to the W'th power to give stronger weight"
+    print >> sys.stderr,"\t-S [MAX_SWAP_DISTANCE=2] - Maximum swap distance in one expansion"
+    print >> sys.stderr,"\t-R [DECODE_BREAKOFF] - Break-off the decoder, don't decode further fragmentation if no new best score is found after x fragmentations (set to 0 to disable)"
+    print >> sys.stderr,"\t-X - Disable further decoding, simply return initial hypothesis  (produces quick but poorer results)"
+    print >> sys.stderr,"\t-C - Use combining solution searcher, taking into account equivalent results accross fragmentations"
+    print >> sys.stderr,"\t-Q - Use simpler solution searcher (now default), simply grabbing the solution with the highest score"
+    print >> sys.stderr,"\t-E - Do *NOT* use the entropy based score function for fragmentation search"
+    print >> sys.stderr,"\t-w - Word-based only (works only multi-classifier mode)"
+    print >> sys.stderr,"\t-L [port] - Use a Language Model server the specified port"
+    #print >> sys.stderr,"\t--wopr=[port]           - Use WOPR server on specified port"
+    print >> sys.stderr,"\t--simplelm=[filename]   - Use simpler pynlpl Language Model instead of SRILM or WOPR"
+    print >> sys.stderr,"\t--srilm=[filename]      - Use the specified language model for SRILM"
+    print >> sys.stderr,"\t-p [phrasetable]      - Load alignment probabilities (P(t|s)) from phrasetable"
+    print >> sys.stderr,"\t-A [p=0.01]           - Default alignment probability for when no match was found in the phrasetable "
+
+def main():
+    global DEBUG, DISTORTION_CONSTANT, PTRANSLATION_WEIGHT,PTRANSLATION_THRESHOLD, INITIAL_HYPOTHESIS_ONLY, MAX_SWAP_DISTANCE, DECODE_BREAKOFF, SIMPLE_SOLSEARCH, VERSION,lm, phrasetable, NFEATLEFT, NFEATRIGHT, IGNOREERRORS, DUPLICATES, ALIGNPROBDEFAULT
+    beamsize = 1
+    fragbeamsize = 20
+    START=1
+    END=9999999
+    LMPORT = None
+    WORDBASED_ONLY = False
+    timbloutputstream = testcorpus = None
+    outputprefix = outputinfix = ""
+    srilmfilename = "EMEA-EuroParl-JRC-OpenSub-english.lm"
+    simplelmfilename = ""
+    phrasetable_file = ""
+
+    print >> sys.stderr,"Phrase Based Memory-Based Machine Translation (PBMBMT) -- DECODER v" + VERSION
+    print >> sys.stderr,"    by Maarten van Gompel ( http://proylt.anaproy.nl ), licensed under GPLv3"
+    print >> sys.stderr,"---------------------------------------------------------------------------"
+
+    try:
+        opts, args = getopt.getopt(sys.argv[1:], "o:t:p:m:b:f:d:l:s:e:D:B:W:S:L:R:EwXLhQCIZA:", ["help","simplelm=","srilm="])
+    except getopt.GetoptError, err:
+        # print help information and exit:
+        print >>sys.stderr,str(err)
+        usage()
+        sys.exit(2)
+
+    for o, a in opts:
+        #if o == "-o":            
+        #        timbloutputstream = open(a)
+        if o == "-o":
+            outputinfix = a
+        elif o == "-l":
+            srilmfilename = a
+        elif o == "-t":            
+            testcorpus = open(a)
+            outputprefix = a.split(".")[0]
+        elif o == "-b":            
+            beamsize = int(a)
+        elif o == "-f":            
+            fragbeamsize = int(a)
+        elif o == "-d":            
+            DEBUG = int(a)
+        elif o == "-s":            
+            START = int(a)
+        elif o == "-e":            
+            END = int(a)
+        elif o == "-h":            
+            usage()
+            sys.exit(2)
+        elif o == "-D":            
+            DISTORTION_CONSTANT = float(a)
+        elif o == "-R":            
+            DECODE_BREAKOFF = int(a)
+        elif o == "-X":            
+            INITIAL_HYPOTHESIS_ONLY = True
+        elif o == "-B":            
+            PTRANSLATION_THRESHOLD = float(a)
+        elif o == "-W":            
+            PTRANSLATION_WEIGHT = float(a)
+        elif o == "-S":
+            MAX_SWAP_DISTANCE = int(a)
+        elif o == "-Q":
+            SIMPLE_SOLSEARCH = True
+        elif o == "-C":
+            SIMPLE_SOLSEARCH = False
+        elif o == "-I":
+            IGNOREERRORS = True
+        elif o == "-E":
+            USEENTROPYSCORE = False
+        elif o == '-L':
+            LMPORT = int(a)
+        elif o == "-w":
+            WORDBASED_ONLY = True
+        elif o == "-A":
+            ALIGNPROBDEFAULT = float(a)
+        elif o == "-Z":
+            DUPLICATES = True
+        elif o == "-p":
+            phrasetable_file = a
+        elif o == "--simplelm":
+            simplelmfilename = a
+            LMPORT = None #takes precedence
+        elif o == "--srilm":
+            srilmfilename = a
+            LMPORT = None #takes precedence
+        else:
+            print >>sys.stderr,"ERROR: Unknown option:",o
+            usage()
+            sys.exit(2)
+
+    if not testcorpus:
+        usage()
+        sys.exit(2)
+    #if not exists(srilmfilename):
+    #    print >> sys.stderr, "ERROR: Could not find language model file " + lmfilename
+    #    sys.exit(2)
+
+
+    if outputinfix:
+        fallbackprefix = outputprefix
+        outputprefix += "." + outputinfix
+
+    #print >> sys.stderr, "Connecting to WOPR server for full Language Model..."
+    #lm = LM("localhost",lm_port)    #connect to WOPR server
+    #print >> sys.stderr, "Loading Simple Bigram Language Model..."
+    #bigram_model = SimpleLM(open(bigram_corpus,'r'))
+
+    print >> sys.stderr, "Initialising..."
+    
+    if isdir(outputprefix):
+        timbloutputstreams = []    
+        if WORDBASED_ONLY:
+            pattern = outputprefix + "/" + outputprefix + ".test.111.inst.*.out"
+        else:
+            pattern = outputprefix + "/" + outputprefix + ".test.*.inst.*.out"
+       
+        for f in sorted(iglob(pattern)):
+            if NFEATLEFT == None and NFEATRIGHT == None:
+                read = False
+                for block in f.split('.'):
+                    if block == 'test':
+                        read = True
+                    elif read and len(block) == 3 and block[0].isdigit() and block[-1].isdigit():
+                        NFEATLEFT = int(block[0])
+                        NFEATRIGHT = int(block[-1])
+                        break
+
+            #if f[-8:] == ".out.bz2":
+            #    print >> sys.stderr, "\tusing " + f
+            #    timbloutputstreams.append(bz2.BZ2File(f,'r'))
+            #else:
+            print >> sys.stderr, "\tusing " + f
+            #TODO: set ignorecolumn, ignorevalues for single-classifier mode
+            timbloutputstreams.append(TimblOutput(open(f,'r')))
+        if outputinfix and not timbloutputstreams:
+            print >>sys.stderr, "WARNING: No " + outputprefix + "/" + outputprefix + ".test.*.inst.*.out files found, attempting fallback..."
+            if WORDBASED_ONLY:
+                pattern = outputprefix + "/" + fallbackprefix + ".test.111.inst.*.out"
+            else:
+                pattern = outputprefix + "/" + fallbackprefix + ".test.*.inst.*.out"
+            for f in iglob(pattern):
+                print >> sys.stderr, "\tusing " + f
+                timbloutputstreams.append(TimblOutput(open(f,'r'))) 
+    else:
+        print >>sys.stderr, "ERROR: Expected directory '" + outputprefix + "' with timbl output files, but not found"
+        sys.exit(1)
+
+    if not timbloutputstreams:
+        print >>sys.stderr, "ERROR: No timbl output found in '" + outputprefix + "'. Did you run pbmbmt-test first?"
+        sys.exit(1)
+
+    #finding out class configuration based on training instances:
+    #for f in iglob(outputprefix + "/" + outputprefix + ".train.*.inst.ibase"):
+    #    nclassleft = int(f.split(".")[-3][0])
+    #    nclassright = int(f.split(".")[-3][-1])
+    #    print >> sys.stderr, "\tClass configuration: left_context="+str(nclassleft), ", right_context="+str(nclassright)
+    #    break
+    print >> sys.stderr, "\tLeft context features (auto-detected): ", NFEATLEFT
+    print >> sys.stderr, "\tRight context features (auto-detected): ", NFEATRIGHT
+    print >> sys.stderr, "\tStart: ", START
+    print >> sys.stderr, "\tEnd: ", END
+    print >> sys.stderr, "\tDecoder: ",
+    if INITIAL_HYPOTHESIS_ONLY:
+        print >> sys.stderr, "restricted, returning initial hypotheses only"
+    else: 
+        print >> sys.stderr, "fully enabled"
+    print >> sys.stderr, "\tBeamsize core decoder (b): ", beamsize
+    print >> sys.stderr, "\tBeamsize fragmentation-search (f): ", fragbeamsize
+    print >> sys.stderr, "\tDistortion-constant (D): ", DISTORTION_CONSTANT
+    print >> sys.stderr, "\tTranslation probability weight (W): ", PTRANSLATION_WEIGHT
+    print >> sys.stderr, "\tDecoder break-off value (R): ",DECODE_BREAKOFF
+    print >> sys.stderr, "\tBreak-off translation probability threshold (B): ",PTRANSLATION_THRESHOLD
+    print >> sys.stderr, "\tMaximum swap distance (S): ",MAX_SWAP_DISTANCE
+    print >> sys.stderr, "\tDefault alignment probability (A): ",ALIGNPROBDEFAULT
+    if SIMPLE_SOLSEARCH:
+        print >> sys.stderr, "\tSolution searcher: simple (grab solution with highest score)"
+    else:
+        print >> sys.stderr, "\tSolution searcher: standard (take into account shared solutions amongst n-best)"
+    if DEBUG:
+	print >> sys.stderr, "\tDebug mode on (" + str(DEBUG) + ")"
+
+    if not DEBUG == 9:
+        print >> sys.stderr, "Loading  Language Model..."
+
+        if LMPORT > 0:
+            lm = LMClient('localhost',LMPORT)
+        elif simplelmfilename:
+            lm = SimpleLanguageModel()
+            lm.load(simplelmfilename)
+        elif srilmfilename:
+            lm = SRILM(srilmfilename,3)
+        if not lm:
+            print >> sys.stderr, "No Language Model Specified !!!"
+            sys.exit(1)
+
+    if phrasetable_file:
+        phrasetable = PhraseTable(phrasetable_file)
+    else:
+        phrasetable = None
+
+    print >> sys.stderr, "Decoding..."
+
+
+    begintime = time.time()
+
+    sentencecount = 0
+
+    total_Tphrasecount = 0
+    total_Tphraseratio = 0.0
+    total_Sphrasecount = 0
+    total_Sphraseratio = 0.0
+    total_decoderounds = 0
+    total_solhyp = 0
+    total_fragmentations = 0
+
+    #iterate over all sentences in test corpus
+    #for sentence in sentenceIterator(testcorpus,timbloutputstream):
+    for sentence in sentenceIterator(testcorpus,timbloutputstreams):
+        sentencecount += 1
+
+        if sentencecount < START:
+            continue
+        if sentencecount == END:
+            break
+
+        if DEBUG == 9:
+            print sentencecount, sentence
+            continue
+
+        #find all possible fragmentations (in source language)
+        try:
+            fragmentations = sentence.fragmentations(fragbeamsize)
+        except: 
+            if IGNOREERRORS:
+                print >>sys.stderr, "ERROR: No initial fragmentation found for sentence " + str(sentencecount),':', sentence
+                print ""
+                continue
+            else:
+                raise
+        
+
+        print >> sys.stderr,  "INPUT #" + str(sentencecount) + ": " + str(sentence) + " (" + str(len(fragmentations)) + " fragmentations)"
+
+        if DEBUG >= 3:
+            searchdebug = True
+        else:
+            searchdebug = False
+
+        if not fragmentations:
+            print >>sys.stderr, "WARNING: No fragmentations found for sentence " + str(sentencecount),':', sentence
+
+        #if len(fragmentations) >= 50:
+        #    if DEBUG >= 1: print "(too many fragmentations, purging some)"
+        #fragmentations = sorted(fragmentations, cmp=lambda x,y: len(x) - len(y) )[:50] #sort by length
+
+
+        solutions = []
+        best_score = -999999
+        no_improvement = 0
+
+
+
+        #iterate overal all possible fragmentatations (in source language)
+        for i, fragmentation in enumerate(fragmentations): #sentence.search_fragmentations():
+            if DEBUG == 10:
+                continue
+
+            Sphrasecount = fragmentation.phrasecount()
+            Sphraseratio = fragmentation.phraseratio()
+            print >> sys.stderr, "@", str(sentencecount)+":"+str(i+1)+"/"+str(len(fragmentations)), "len="+str(len(fragmentation)), "phrasecount="+ str(Sphrasecount), "phraseratio="+ str(Sphraseratio)
+            print >> sys.stderr, '\t\tFRAGMENTATION: ',str(fragmentation)
+            total_fragmentations += 1
+
+
+            if DEBUG >= 3 and DEBUG < 10:
+                print >>sys.stderr,"  FRAGMENTS " + str(i) + ":"
+                for fragment in fragmentation:
+                    print >>sys.stderr,"\t" + sentence.fragmentout(fragment) + ": " + fragment.distrout()
+                print  >>sys.stderr,""
+        
+            fragmentation.set_index() #necessary before decoding
+            #decode, search solution in target language
+            #new_solutions =  decode(sentence, fragmentation, lm, beamsize)
+            if INITIAL_HYPOTHESIS_ONLY:
+                solutions += [ InitialHypothesis(fragmentation) ]
+            else:
+                #DECODER
+                #new_solutions = PriorityQueue()
+                hypothesis = InitialHypothesis(fragmentation)
+
+                badscore = 0
+
+                for j, solutionhyp in enumerate(BeamSearch(hypothesis, beamsize, minimize=False, graph=True, duplicates=DUPLICATES, debug=searchdebug)):
+                    score = solutionhyp.score() 
+                    total_decoderounds += 1
+                    print >>sys.stderr, '\t\tDECODE ROUND '  + str(j+1) + ': ' + str(solutionhyp), score
+                    if score <= -999999999:
+                        badscore += 1
+                        if badscore >= 5:
+                            #five bad scores in a row? abort decoding
+                            print >>sys.stderr, '\t\tTOO MANY ERRORS, ABORTING DECODE ROUND'
+                            break
+                    else:
+                        badscore = 0 
+                        hypothesis = solutionhyp
+
+                hyp_phrasecount = 0
+                hyp_phraseratio = 0.0
+
+            
+                total_solhyp += 1
+
+                hypothesis.fragmentation = fragmentation #make a back link to fragmentation so we can find it again later when computing source-side phrasecounts
+
+                phrasecount = hypothesis.phrasecount()
+                phraseratio = phrasecount / float(len(hypothesis)) #faster than invoking .phraseratio() method
+                print >>sys.stderr, '\t\tSOLUTION HYPOTHESIS: ' +  hypothesis.out() + " | score="+str(hypothesis.score())  + " phrasecount=" + str(phrasecount) + " phraseratio=" + str(phraseratio)
+                if DEBUG >= 2:
+                    print >> sys.stderr,'\t\t\t' + hypothesis.debugout()
+
+                #hyp_phrasecount += phrasecount
+                #hyp_phraseratio += phraseratio
+
+                #hyp_phrasecount =  hyp_phrasecount / float(len(new_solutions))
+                #hyp_phraseratio =  hyp_phraseratio / float(len(new_solutions))
+
+                #print >> sys.stderr, "\t\tAverage phrasecount over all solution hypotheses:",allhyp_phrasecount, " Average phraseratio:",allhyp_phraseratio
+
+                #solutions = solutions + list(new_solutions)
+                solutions.append(hypothesis)
+
+
+            new_best_score = max([ x.score() for x in solutions])
+            if new_best_score > best_score:
+                best_score = new_best_score
+                no_improvement = 0
+            else:
+                no_improvement += 1
+                if DECODE_BREAKOFF > 0 and no_improvement == DECODE_BREAKOFF:
+                    print >>sys.stderr, "\tDECODER: This is fragmentation " + str(no_improvement) + " without improvement, breaking off prematurely to save time"
+                    break
+
+        print >> sys.stderr, "Number of solutions:", len(solutions)
+        if SIMPLE_SOLSEARCH:
+            final_solution, final_score, final_Tphrasecount, final_Tphraseratio, final_Sphrasecount, final_Sphraseratio = searchsolution_simple(solutions)
+        else:
+            final_solution, final_score, final_Tphrasecount, final_Tphraseratio, final_Sphrasecount, final_Sphraseratio = searchsolution(solutions)
+
+        total_Tphrasecount += final_Tphrasecount
+        total_Tphraseratio += final_Tphraseratio
+        total_Sphrasecount += final_Sphrasecount
+        total_Sphraseratio += final_Sphraseratio
+
+
+        print >> sys.stderr, "Solution score=%f source-phrasecount=%0.1f source-phraseratio=%0.3f target-phrasecount=%0.1f target-phraseratio=%0.3f" % (final_score, final_Sphrasecount, final_Sphraseratio, final_Tphrasecount, final_Tphraseratio)
+        print >> sys.stderr, "OUTPUT: " , final_solution
+
+        print final_solution #output to stdout
+
+        print >> sys.stderr, "---"
+
+    endtime = time.time()
+    duration = endtime - begintime
+    print >> sys.stderr, "All done.\n"
+    print >> sys.stderr, "GENERAL STATISTICS (totals and average per sentence where applicable)"
+    print >> sys.stderr, "Sentences processed: %i" % sentencecount
+    print >> sys.stderr, "Duration:            %0.3f s\t\t%0.3f ms" % (duration, ((duration / float(sentencecount)) * 1000) )
+    print >> sys.stderr, "Decode rounds:       %5i\t\t%0.2f" % (total_decoderounds, (total_decoderounds / float(sentencecount)))
+    print >> sys.stderr, "Fragmentations:      %i\t\t%0.2f" % (total_fragmentations, (total_fragmentations / float(sentencecount)))
+    #print >> sys.stderr, "Solution hypotheses: %i\t\t%0.2f:" %(total_solhyp, (total_solhyp / float(sentencecount)))
+    
+    print >> sys.stderr, "\nPHRASE STATISTICS (computed over final solutions only)"
+    print >> sys.stderr, "Average source phrasecount: %0.2f" % (total_Sphrasecount  / float(sentencecount)) #Out of SELECTED FRAGMENTATIONS only
+    print >> sys.stderr, "Average source phraseratio: %0.5f" % (total_Sphraseratio  / float(sentencecount))
+    print >> sys.stderr, "Average target phrasecount: %0.2f" % (total_Tphrasecount  / float(sentencecount)) #Out of FINAL SOLUTIONS only
+    print >> sys.stderr, "Average target phraseratio: %0.5f" % (total_Tphraseratio  / float(sentencecount))
+
+
+def print_timing(func):
+    def wrapper(*arg):
+        t1 = time.time()
+        res = func(*arg)
+        t2 = time.time()
+        print >> sys.stderr, '%s took %0.3f ms' % (func.func_name, (t2-t1)*1000.0)
+        return res
+    return wrapper
+
+
+##########################################################################################
+
+
+class Fragment:
+    def __init__(self,begin,length,fbegin,flength,dist, nclassleft,nclassright, source):
+        global  PTRANSLATION_THRESHOLD
+        self.begin = begin
+        self.length = length
+        self.fbegin = fbegin #focus-begin
+        self.flength = flength #focus-length
+        self.score = 0
+        self.index = -1 #uninitialised index
+        assert isinstance(source, Sentence)
+        self.source = source
+
+        #Generate hypothesis fragments
+        self.hfragments = []
+        last = 0
+        self.score = dist.entropy(2)
+
+        self.bestscore = 0
+        for label, Ptranslation in dist:
+            if self.bestscore == 0: self.bestscore = Ptranslation
+            #if self.score == Ptranslation or (self.score / Ptranslation >= PTRANSLATION_THRESHOLD): #Ptranslation breakoff
+            if self.bestscore == Ptranslation or (Ptranslation / float(self.bestscore) >= PTRANSLATION_THRESHOLD): #Ptranslation
+                try:
+                    self.hfragments.append(  HypothesisFragment(label,nclassleft,nclassright,Ptranslation,self) )
+                except:
+                    continue
+        #DEBUG
+        #print "FRAGMENT SCORE:" , self.score, self.bestscore
+        #print dist
+
+
+
+    def __eq__(self,other):
+        return (self.begin == other.begin and self.length == other.length and self.fbegin == other.fbegin and self.flength == other.flength)
+
+
+    def __hash__(self):
+        return self.begin | self.length | self.fbegin | self.flength
+
+    def besthfragment(self):
+        return self.hfragments[0]
+
+
+    def distrout(self):
+        """print distribution (for debug purposes)"""
+        s = ""
+        for hfragment in self.hfragments:
+            s += "_".join(hfragment.label) + " ("+str(hfragment.Ptranslation)+"); "
+        return s
+
+    def isphrase(self):
+        return self.flength > 1
+
+    def focus(self):
+        #return the focus part
+        return self.source.words[self.fbegin:self.fbegin + self.flength]
+
+
+class Sentence:
+    def __init__(self,words):
+        global NFEATLEFT, NFEATRIGHT
+        self.words = words
+        self.mask = NFEATLEFT * ["__"] + words + NFEATRIGHT * ["__"]
+        self.fragments = []
+        
+    def addFragment(self,fragmentwords, dist):
+        global NFEATLEFT, NFEATRIGHT, DEBUG
+
+        #Remove POS, LEMMA data, we can simply ignore it:
+        fragmentwords = [ x for x in fragmentwords if x[:5] != ':POS:' and x[:7] != ':LEMMA:' ]
+
+
+        fragmentwords = sum([ (["__"],x.split("_"))[x != "__"] for x in fragmentwords],[])  #convert ["__","a","b_c","d"] into ["__","a","b","c","d"]
+    
+
+
+        #Determine class configuration
+        testlabel = dist.mode() #dist.dist.keys()[0]
+        nclassleft = nclassright = len(testlabel) / 2 #TODO: I don't get this anymore, but it works
+
+
+        l = len(fragmentwords)
+        found = False
+        for i in xrange(0, len(self.mask) - l + 1):
+            if self.mask[i:i+l] == fragmentwords:
+                begin = i - NFEATLEFT #translate to self.words indices
+                length = l
+                focusbegin = begin + NFEATLEFT
+                focuslength = l - NFEATLEFT - NFEATRIGHT
+
+                if begin < 0:
+                    #compensate, crop left
+                    d = abs(begin) #offset difference
+                    begin = 0 #( == begin + d)
+                    length = length - d
+                if begin+length > len(self.words):
+                    #compensate, crop right
+                    d = (begin+length) - len(self.words) #offset difference
+                    length = length - d
+
+                found = True
+                fragment = Fragment(begin,length,focusbegin,focuslength, dist,nclassleft,nclassright, self)
+                if DEBUG >= 5:
+                    print >>sys.stderr," BUILT FRAGMENT: ", self.fragmentout(fragment)
+                    print >>sys.stderr,"  begin: ", begin
+                    print >>sys.stderr,"  length: ", length
+                    print >>sys.stderr,"  fbegin: ", focusbegin
+                    print >>sys.stderr,"  flength: ", focuslength
+
+                if not fragment in self.fragments: #if the fragment doesn't already exist
+                    if DEBUG >= 5:
+                        print >>sys.stderr," ADDED TO SENTENCE!"
+                    self.fragments.append(fragment)
+
+
+        return found
+
+
+
+    def fragmentout(self,fragment):
+        out = ""
+        if fragment.fbegin > fragment.begin:
+            out += " ".join(self.words[fragment.begin:fragment.begin + (fragment.fbegin - fragment.begin)]) + " "
+        out += "*" + "_".join(self.words[fragment.fbegin:fragment.fbegin + fragment.flength]) + "*"
+        if fragment.begin+fragment.length > fragment.fbegin+fragment.flength:
+            #print "DEBUG: ", fragment.begin,fragment.length, " FOCUS: ",fragment.fbegin,fragment.flength
+            out += " " + " ".join(self.words[fragment.fbegin + fragment.flength:fragment.fbegin + fragment.flength + (fragment.begin+fragment.length) - (fragment.fbegin+fragment.flength)])
+        return out
+
+    def fragmentations(self, beamsize=20):
+        global DEBUG, DUPLICATES
+        l = len(self.words)
+        fragmentations = []
+        for fragmentation in BeamSearch(InitialFragmentation(self), beamsize,graph=True,minimize=True, duplicates=DUPLICATES,debug=(DEBUG >=5)):
+            fragmentations.append(fragmentation)
+
+
+        if beamsize > len(fragmentations):
+            return fragmentations
+        else:
+            return fragmentations[-beamsize:]
+
+    def fragmentations_old(self, beamsize=20):
+        """local beam search to find good fragmentations"""
+        l= len(self.words)
+        fringe = [ (0, Fragmentation([],self)) ]
+        fragmentations = []
+        while fringe:
+            next_states = []
+            while fringe:
+                    score, fragmentation = fringe.pop(0)
+                    for next_fragmentation in fragmentation.expand():
+                        next_score = next_fragmentation.score()
+                        if next_fragmentation.test(l):
+                            fragmentations.append( (next_score, next_fragmentation) ) 
+
+                        next_states.append( (next_score, next_fragmentation) )
+
+            fringe = sort_fringe(next_states, beamsize)
+
+        return [ y for x,y in sorted(fragmentations, key=lambda x: x[0]*-1)[:beamsize] ]
+        
+
+    def __str__(self):
+        return " ".join(self.words)
+
+
+class Fragmentation(AbstractSearchState):
+    def __init__(self, fragments, sentence, parent = None):
+        self.fragments = fragments # assigned fragments
+        self.sentence = sentence
+        super(Fragmentation,self).__init__(parent)
+
+    def score(self):
+        """Calculcate score based on entropy (minimize)"""
+        global USEENTROPYSCORE
+        if not USEENTROPYSCORE: return self.score_old()
+        if not self.fragments:
+            return 0
+        else:
+            score = 1
+        for fragment in self.fragments:
+            score += fragment.score
+        return score
+
+    def score_old(self):
+        """Calculate score based on best hfragment score (maximize)"""
+        if not self.fragments:
+            return 0
+        else:
+            score = 1
+        for fragment in self.fragments:
+            score *= fragment.bestscore
+        return score
+
+    def expand(self):
+        pool = self.sentence.fragments
+
+        if len(self.fragments) > 0:
+            begin = self.fragments[-1].fbegin + self.fragments[-1].flength
+        else:
+            begin = 0
+        end = len(self.sentence.words)
+
+
+        #Merge fragments together when possible
+        for i in xrange(0, len(self.fragments)):
+            for j in xrange(i + 1, len(self.fragments)):
+                #Can we merge fragments[i:j], is there a fragment that covers this span ?
+                for fragment in self.sentence.fragments:
+                    if fragment.fbegin == self.fragments[i].fbegin and fragment.fbegin + fragment.flength == self.fragments[j].fbegin + self.fragments[j].flength:
+                        #yes! generate new fragmentation
+                        fragments = []
+                        if i > 0:
+                            fragments = self.fragments[:i]
+                        fragments.append(fragment) #the replacement for self.fragments[i:j+1]
+                        if j < len(self.fragments) - 1:
+                            fragments += self.fragments[j+1:]
+                        yield Fragmentation(fragments,self.sentence, self)
+
+
+    def expand_old(self):
+        l = len(self.sentence.words)
+        pool = self.sentence.fragments
+
+        if len(self.fragments) > 0:
+            begin = self.fragments[-1].fbegin + self.fragments[-1].flength
+        else:
+            begin = 0
+
+
+        for fragment in pool:
+            if fragment.fbegin == begin and fragment.fbegin + fragment.flength <= l:
+                if not fragment in self.fragments: #make sure we don't reuse the same fragment twice!
+                    if fragment.fbegin + fragment.flength <= l:
+                        #we found a fragment to add:
+                        yield Fragmentation(self.fragments + [fragment],self.sentence, self)
+
+    def test(self, goalstates=None):
+        return (self.fragments and self.fragments[-1].fbegin + self.fragments[-1].flength == len(self.sentence.words))
+
+    def set_index(self):
+        """set index numbers on the fragments, required before passing to decoder"""
+        for i, fragment in enumerate(self.fragments):
+            fragment.index = i
+
+
+    def __getitem__(self,index):
+        return self.fragments[index]
+
+    def __len__(self):
+        return len(self.fragments)
+
+    def __iter__(self):
+        return iter(self.fragments)
+    
+    def __str__(self):
+        s = ""
+        for fragment in self.fragments:
+            s += self.sentence.fragmentout(fragment) + " | "
+        return s
+    
+    def __eq__(self, other):
+        assert isinstance(other, Fragmentation)
+        if self.sentence != other.sentence or len(self.fragments) != len(other.fragments):
+            return False
+        for f1,f2 in zip(self.fragments, other.fragments):
+            if f1 != f2:
+                return False
+        return True
+
+
+    def __hash__(self):
+        h = hash(self.sentence)
+        for fragment in self.fragments:
+            h = h | hash(fragment)
+        return h
+
+
+    def phrasecount(self):
+        """calculate the amount of phrases in this fragment"""
+        phrasecount = 0
+        for fragment in self.fragments:
+            if fragment.isphrase():
+                phrasecount += 1
+        return phrasecount
+
+    def phraseratio(self):
+        """calculate the percentage of phrases in this fragment"""
+        return self.phrasecount() / float(len(self.fragments))
+
+class InitialFragmentation(Fragmentation):
+    def __init__(self, sentence):
+        global DEBUG, ALIGNPROBWEIGHT
+        self.sentence = sentence
+        fragments = []
+        #Start with a word-based fragmentation
+        begin = 0
+        end = len(self.sentence.words)
+
+        pool = [ x for x in self.sentence.fragments ]
+        while begin < end:
+            found = False
+            for fragment in pool:
+                if DEBUG >= 4:
+                    print >> sys.stderr,"INITFRAG - CHECKING: ", self.sentence.words[fragment.fbegin:fragment.fbegin+ fragment.flength]
+                if fragment.flength == 1 and fragment.fbegin == begin and fragment.fbegin + fragment.flength <= end:
+                    #if not fragment in fragments: #make sure we don't reuse the same fragment twice!
+                    if fragment.fbegin + fragment.flength <= end:
+                        #we found a fragment to add:
+                        found = True
+                        fragments.append(fragment)
+                        pool.remove(fragment)
+                        begin = fragment.fbegin + fragment.flength
+                        if DEBUG >= 4:
+                            print >>sys.stderr,"INITFRAG - ADDING: ", self.sentence.words[fragment.fbegin:fragment.fbegin+ fragment.flength]
+                        break
+
+            if not found:
+                print >>sys.stderr, "SENTENCE: ", " ".join(self.sentence.words)
+                print >>sys.stderr, "#FRAGMENTS: ", len(self.sentence.fragments)
+                print >>sys.stderr, "WARNING: Unable to create an initial fragmentation! No fragment was found for '"+self.sentence.words[begin]+"' in the sentence! Falling back to non-translating ad-hoc-fragments (a trigram) (if things go terribly wrong later, this may be the cause)."
+
+                adhocbegin = begin - 1
+                adhoclength = 3
+
+                if begin == 0:
+                    adhocbegin = 0
+                    adhoclength -= 1
+                if begin + 1 >= end:
+                    adhoclength -= 1
+                #assert (nclassleft == nclassright == 1)
+                adhocfragment = Fragment(adhocbegin,adhoclength,begin,1,Distribution( {self.sentence.words[begin]: 1.0 } ), 0,0, self.sentence)
+                fragments.append(adhocfragment)
+                self.sentence.fragments.append(adhocfragment)
+
+                begin += 1
+                #raise Exception("Unable to create an initial fragmentation! Fragments don't map sentence!")
+
+        super(InitialFragmentation,self).__init__(fragments, sentence, None)
+        self.set_index()
+
+
+
+
+def sentenceIterator(textstream, timblstreams):
+    global DEBUG
+    candidate = []
+    #iterate over all streams
+    for i, timblstream in enumerate(timblstreams):
+        #read initial candidate
+        try:
+            candidate.append(iter(timblstream).next())
+        except StopIteration:
+            pass
+
+    sentence = buf = None
+    while True:
+
+        #read input sentence from corpus
+        line = textstream.readline()
+        if not line:
+            break #we're done, no more lines left
+        words = line.strip().split(" ")    
+        sentence = Sentence(words)
+        if DEBUG >= 5:
+            print >>sys.stderr,"SENTENCE: ", sentence
+
+        if buf:
+            #try to match elements in buffer again with new sentence
+            for i, timblstream in enumerate(timblstreams):
+                for features,_,_, dist in buf[i]:
+                    if sentence.addFragment(features,dist):
+                        if DEBUG >= 5:
+                            print >>sys.stderr,"FRAGMENT FROM BUFFER MATCHED: ", features
+
+
+        #clear and reinitialise buffer
+        buf = []
+        for i, timblstream in enumerate(timblstreams):
+            buf.append([])
+
+
+        for i, timblstream in enumerate(timblstreams):
+            while True:
+                if candidate[i]:
+                    features, _, cls, distribution = candidate[i]
+                    #if len(buf[i]) > 0 and len(buf[i][0]) > 0: #DEBUG
+                    #   print "BUF0 vs FEATURES: ", buf[i][0][0], " vs ", features
+                    if len(buf[i]) > 0 and len(buf[i][0]) > 0 and features == buf[i][0][0]:	
+                        if DEBUG >= 5: print >>sys.stderr,"CANDIDATE EQUALS FIRST ITEM IN BUFFER, BREAKING"
+			break
+                    if DEBUG >= 5: print >>sys.stderr,"CONSIDERING FRAGMENT #" + str(i+1) + ":", features
+                    result = sentence.addFragment(features,distribution) #does candidate match with input sentence?
+                    if result:
+                        if DEBUG >= 5: print >>sys.stderr,"FRAGMENT MATCHED!"
+                        buf[i].append(candidate[i]) #store current candidate in buffer
+                        try:
+                            candidate[i] = iter(timblstream).next() #read next candidate
+                        except StopIteration:
+                            break
+                    else:
+                        break
+                else:
+                    break
+
+        yield sentence
+
+
+
+class HypothesisFragment:
+    def __init__(self, label, nclassleft, nclassright, Ptranslation, source):
+        if isinstance(label,str):
+            label = label.split("_")
+    
+        self.label = tuple(sum([ (["__"],x.split("_"))[x != "__"] for x in label],[]))
+        if "" in self.label:
+            raise Exception("Illegal label in distribution: " + str(label))
+        self.Ptranslation = Ptranslation
+        self.source = source
+        self.nclassleft = nclassleft
+        self.nclassright = nclassright
+
+    def focus(self, overlap=0):
+        while overlap < 0:
+            if self.label[self.nclassleft + overlap] == "__":
+                overlap += 1
+            else:
+                break
+        return self.label[self.nclassleft + overlap:len(self.label) - self.nclassright] 
+
+    def __eq__(self,hfragment):
+        return (self.label == hfragment.label and self.Ptranslation == hfragment.Ptranslation and self.source == hfragment.source)
+
+    def __hash__(self):
+        return hash(self.label)
+
+    def isphrase(self):
+        return ((len(self.label) - self.nclassleft - self.nclassright) > 1)
+
+
+class Hypothesis(AbstractSearchState):
+    def __init__(self, transitionchain, lastoperation = -2, parent = None):
+        self.transitionchain = transitionchain #[(hfragment, transitionP, overlap)]
+        self.scorecache = 0
+
+        self.lastoperation = lastoperation #>= 0 (index of last substituted fragment), -1 : swap
+        super(Hypothesis, self).__init__(parent)
+
+
+    def __eq__(self, other):
+        if len(self) != len(other):
+            return False
+        else:
+            for (hfragment, transitionP, overlap), (hfragment2, transitionP2, overlap2) in zip(self, other):
+                if hfragment != hfragment2 or transitionP != transitionP2 or overlap != overlap2:
+                    return False
+        return True
+
+    def __hash__(self):
+        h = 0
+        for hfragment, transitionP, overlap in self.transitionchain:
+            h += hash(hfragment) | hash(transitionP) | overlap
+        return h
+
+
+    def __len__(self):
+        return len(self.transitionchain)
+
+    def out(self):
+        #output the sentence with debug info
+        s = ""
+        for hfragment, transitionP, overlap in self.transitionchain:
+            s += " | "
+            if hfragment.nclassleft > 0:
+                s += " ".join(hfragment.label[:hfragment.nclassleft]) + " "
+            s += "*" + "_".join(hfragment.focus(overlap)) + "*"
+            if hfragment.nclassright > 0:
+                s += " " + " ".join(hfragment.label[hfragment.nclassright*-1:])
+        s += " | "                
+        return s
+
+    def debugout(self):
+        s = []
+        for hfragment, transitionP, overlap in self.transitionchain:
+            s.append(str(hfragment.source.index))
+        return "(" + ",".join(s) + ")"
+
+    def __str__(self):
+        #output the sentence
+        words = []
+        for hfragment, transitionP, overlap in self.transitionchain:
+            words = words + list(hfragment.focus(overlap))
+        return " ".join(words)
+
+    def __iter__(self):
+        for hfragment, transitionP, overlap in self.transitionchain:
+            yield hfragment, transitionP, overlap
+
+
+    def score(self):
+        global DEBUG, PTRANSLATION_WEIGHT, lm, phrasetable, ALIGNPROBDEFAULT
+        """Returns the log probability for this hypothesis"""
+        if self.scorecache != 0: #we cache the score to prevent it from being recalculated
+            return self.scorecache
+        else:
+            LogPtransition_total = 0.0
+            LogPtranslation_total = 0.0
+            for hfragment, Ptransition, overlap in self.transitionchain:
+                LogPtransition_total += math.log10(Ptransition)
+                if phrasetable:
+                    #look up in phrasetable
+                    sourcephrase = " ".join(hfragment.source.focus())
+                    targetphrase = " ".join(hfragment.focus())
+                    try:
+                        targetphrases = phrasetable[sourcephrase]
+                        alignprob = ALIGNPROBDEFAULT
+                        for target, Pst, Pts,_ in targetphrases:
+                            if target == targetphrase:
+                                alignprob = Pts
+                                break
+                    except KeyError:
+                        alignprob = ALIGNPROBDEFAULT
+                    LogPtranslation_total += (math.log10(hfragment.Ptranslation) * PTRANSLATION_WEIGHT) + math.log10(alignprob)
+                else:
+                    LogPtranslation_total += math.log10(hfragment.Ptranslation) * PTRANSLATION_WEIGHT 
+
+            penalty = 0
+
+            try:
+                LogP_LM = math.log10(lm.scoresentence(str(self)))
+            except ValueError: #catch math domain error (in rare cases)
+                print >> sys.stderr, "WARNING: Domain error in calculating LM score for ", str(self)
+                LogP_LM = -999999999
+            except OverflowError: #catch math range error (in rare cases)
+                print >> sys.stderr, "WARNING: Range error in calculating LM score for ", str(self)
+                LogP_LM = -999999999
+
+            score = LogPtransition_total + LogPtranslation_total + LogP_LM + penalty
+            if DEBUG >=3:
+                if phrasetable:
+                    print >>sys.stderr, self.out(), " --> ", LogPtransition_total,"+", LogPtranslation_total ," [alignprob="+str(alignprob)+"] +", LogP_LM,"+", penalty," = ",score
+                else: 
+                    print >>sys.stderr, self.out(), " --> ", LogPtransition_total,"+", LogPtranslation_total,"+", LogP_LM,"+", penalty," = ",score
+                #print self.out(), " --> ", LogPtransition_total,"+", LogP_LM,"+", penalty, "("+str(leftover)+") = ",score
+            self.scorecache = score
+
+        return self.scorecache
+
+    def phrasecount(self):
+        """calculate the amount of phrases in this hypothesis"""
+        phrasecount = 0
+        for hfragment, _, _ in self.transitionchain:
+            if hfragment.isphrase():
+                phrasecount += 1
+        return phrasecount
+
+    def phraseratio(self):
+        """calculate the percentage of phrases in this hypothesis"""
+        return self.phrasecount() / float(len(self.transitionchain))
+
+
+    def score_transitions(self, transitionchain, hfragment):
+        global DISTORTION_CONSTANT
+        """Calculate a transition score (distortion factor) for the transition from the previous hfragment to the proposed one. This function returns a list of transitions (hfragment, transitionscore, overlap), as there may be multiple possible transitions due to overlap"""
+
+        #some constant index keys
+        HFRAGMENT=0
+        OVERLAP=2
+
+        if not transitionchain:
+            #there are no previous hfragments, the hfragment is the first of the sentence
+            Pdistortion = DISTORTION_CONSTANT**(abs(hfragment.source.index))    
+            transitionscore = Pdistortion
+            return [(hfragment, transitionscore, 0)]    
+        else:
+            #there is a previous hfragment
+            distance = hfragment.source.index - transitionchain[-1][HFRAGMENT].source.index
+            if distance > 0:
+                Pdistortion = DISTORTION_CONSTANT**(distance - 1) #Distortion Probability (will be 1 if there is no distortion)
+            elif distance < 0:
+                Pdistortion = DISTORTION_CONSTANT**(abs(distance)) #Distortion Probability (will be 1 if there is no distortion)
+            else: 
+                raise Exception("Fatal error, distance between hfragments can't be zero!")
+
+            transitions = []
+            if transitionchain[-1][HFRAGMENT].nclassleft != hfragment.nclassleft or transitionchain[-1][HFRAGMENT].nclassright != hfragment.nclassright:
+                raise Exception("Different class configurations not supported yet!")
+            elif hfragment.nclassleft != hfragment.nclassright:
+                raise Exception("Uneven left- and right- context in class configuration not supported yet!")
+            elif hfragment.nclassleft >= 0: #no context information in class
+                transitionscore = Pdistortion
+                transitions.append( (hfragment, transitionscore, 0) )
+
+                if hfragment.nclassleft > 0:
+                    #can we insert spurious words based on context overlap?
+                    right_context = transitionchain[-1][HFRAGMENT].label[-hfragment.nclassright:]
+                    left_context = hfragment.label[hfragment.nclassleft:]
+                    if right_context == left_context:
+                        #yes we can! add spurious words
+                        transitionscore = Pdistortion
+                        transitions.append( (hfragment, transitionscore, -1 * hfragment.nclassleft) )
+
+
+                #do we have focus overlap and can we add special overlapping transitions?
+                prev_focus = transitionchain[-1][HFRAGMENT].focus(transitionchain[-1][OVERLAP])
+                next_focus = hfragment.focus()
+                for overlap in range(1, min(len(prev_focus),len(next_focus))):
+                    if (prev_focus[-overlap:] == next_focus[:overlap]):
+                        transitionscore = Pdistortion
+                        transitions.append( (hfragment, transitionscore, overlap) )
+
+            else:
+                print >> sys.stderr,"Class configuration not supported"
+
+            return transitions
+
+    def expand(self):
+        for hyp in self.expand_substitutions():
+            yield hyp
+        for hyp in self.expand_swaps():
+            yield hyp
+
+    #@print_timing
+    def expand_substitutions(self):
+        global lm
+        transitionchain_buffer = [] #a small buffer of the transitionchain, containing some hfragments before the current one (i)
+        found = False
+        HFRAGMENT = 0
+        l = len(self.transitionchain)
+        for i, (hfragment, transitionscore, overlap) in enumerate(self.transitionchain):
+            if self.lastoperation != i: #don't do a substitution if on this fragment if the last substitution was on this one as well
+                for substitute_hfragment in hfragment.source.hfragments[:100]: #if there are more than 1000 hfragments we simply take the 100 best ones and ignore the rest
+                    for newtransition in self.score_transitions(transitionchain_buffer,  substitute_hfragment):
+                        newtransitionchain = list(self.transitionchain) #shallow copy
+                        newtransitionchain[i] = newtransition
+                        if i < l - 1: #recompute transition of next fragment
+                            for posttransition in self.score_transitions(transitionchain_buffer + [ newtransition ],  newtransitionchain[i+1][HFRAGMENT]):
+                                newtransitionchain2 = list(newtransitionchain) 
+                                newtransitionchain2[i+1] = posttransition
+                                yield Hypothesis(newtransitionchain2,i,self)
+                        else: 
+                            yield Hypothesis(newtransitionchain,i,self)
+            #-1 - lm.n = -3
+            transitionchain_buffer =  transitionchain_buffer[-3:] + [ (hfragment, 0, overlap) ]  #(transitionscore score is irrelevant in temporary transitionchain, only hfragment and overlap are used)
+
+    #@print_timing
+    def expand_swaps(self):
+        global MAX_SWAP_DISTANCE, lm
+        l = len(self.transitionchain)
+        HFRAGMENT=0 #constant
+        swaps = []
+        transitionchain_begin = -3 #-1 - lm.n #Needed to compute overlap etc
+
+        for i in xrange(0,l - 1):
+            for j in xrange(1,MAX_SWAP_DISTANCE + 1):
+                if i + j < l:
+                    swap1 = i
+                    swap2 = i+j
+                    transitionchain_buffer1 = self.transitionchain[:swap1][transitionchain_begin:]
+                    for trans1 in self.score_transitions(transitionchain_buffer1, self.transitionchain[swap2][HFRAGMENT]): #perform first swap
+                        newtransitionchain = list(self.transitionchain) #shallow copy
+                        newtransitionchain[swap1] = trans1
+                        transitionchain_buffer2 = newtransitionchain[:swap2][transitionchain_begin:] 
+                        for trans2 in self.score_transitions(transitionchain_buffer2, self.transitionchain[swap1][HFRAGMENT]):
+                            newtransitionchain2 = list(newtransitionchain) #shallow copy
+                            newtransitionchain2[swap2] = trans2
+
+                            for posttransition in self.score_transitions(newtransitionchain2[:swap1][transitionchain_begin:] ,newtransitionchain2[swap1+1][HFRAGMENT]):
+                                newtransitionchain3 = list(newtransitionchain2) #shallow copy
+                                newtransitionchain3[swap1+1] = posttransition
+                                if swap2 < l - 1:
+                                    for posttransition2 in self.score_transitions(newtransitionchain3[:swap2][transitionchain_begin:] ,newtransitionchain3[swap2+1][HFRAGMENT]):
+                                        newtransitionchain4 = list(newtransitionchain2)
+                                        newtransitionchain4[swap2+1] = posttransition2
+                                        yield Hypothesis(newtransitionchain4, -1, self)
+                                else:
+                                    yield Hypothesis(newtransitionchain3, -1, self)
+
+
+
+
+
+class InitialHypothesis(Hypothesis):
+    def __init__(self, fragments):
+        global lm
+        Hypothesis.__init__(self, []) 
+        l = len(fragments)
+        for i, fragment in enumerate(fragments):
+            new_hfragment = fragment.besthfragment()
+            transition = max(self.score_transitions([], new_hfragment), key=lambda x: x[1] )
+            self.transitionchain.append( transition )
+            previous_hfragment = new_hfragment
+
+
+##########################################################################################3
+
+
+#@print_timing
+
+
+def decode_old(sentence, fragmentation, beamsize=10):
+    global DEBUG, INITIAL_HYPOTHESIS_ONLY, lm
+    """Beam search"""
+
+    initial = InitialHypothesis(fragmentation)
+    fringe = [ ( initial.score(), initial,'' ) ]
+    steps = 0
+    print >> sys.stderr, "\tDecoding: \t",
+
+    while fringe:
+        steps += 1
+
+
+        solutions = list(fringe)
+        if INITIAL_HYPOTHESIS_ONLY: break
+
+        next_states = []
+        for i in range(0,beamsize):
+            if fringe:
+                score,hypothesis, last_operation = fringe.pop(0)
+            else:
+                break
+
+            print >> sys.stderr, str(i) + ':' + str(steps) + last_operation,
+
+            #operation 1 - substitutions
+            for next_hypothesis in hypothesis.expand_substitutions():
+                next_score = next_hypothesis.score()
+                if next_score > score: next_states.append( (next_score, next_hypothesis, 'S') )
+            #operation 2 - swaps
+            for next_hypothesis in hypothesis.expand_swaps():
+                next_score = next_hypothesis.score()
+                if next_score > score: next_states.append( (next_score, next_hypothesis, 'M') )
+
+
+        if not next_states:
+            break
+
+        fringe = sort_fringe(fringe + next_states, beamsize) #sorted(fringe + next_states, key=lambda x: x[0]*-1)[:beamsize]
+
+    print >>sys.stderr
+
+    if DEBUG >= 2:
+        print >>sys.stderr,"\tSOLUTION HYPOTHESES: "
+        total_phrasecount = 0
+        for score, hypothesis,lastoperation in solutions:
+            phrasecount = hypothesis.phrasecount()
+            print >>sys.stderr,"[" + hypothesis.out() + str(score)  + " " + hypothesis.debugout()  + " " + str(phrasecount) + " ] ;"
+            total_phrasecount += phrasecount
+        print >>sys.stderr,"phrasecount: ", total_phrasecount / float(len(solutions))
+        print
+
+    return solutions
+
+
+def sort_fringe(fringe, beamsize): #obsolete in >0.20?
+    """Sort the fringe and remove (exact) duplicates"""
+    new_fringe = []
+    lastitem = (None,None,None)
+    count = 0
+    for item in sorted(fringe, key=lambda x: x[0]*-1):
+        if item[0] != lastitem[0] and item[1] != lastitem[1]:
+            new_fringe.append(item)
+            count += 1
+            lastitem = item
+        if count == beamsize:
+            break
+    return new_fringe
+    
+        
+
+def searchsolution_simple(hypotheses):
+    """select the best solution, and return statistics"""
+    global DEBUG
+    highest = -999999999999999999
+    solution = None
+    Tphrasecount = 0
+    Tphraseratio = 0
+    Sphrasecount = 0
+    Sphraseratio = 0
+    for hypothesis in hypotheses:
+        hypstring = str(hypothesis)
+        if hypothesis.score() > highest:
+            highest = hypothesis.score()
+            solution = hypothesis
+            Tphrasecount = hypothesis.phrasecount()
+            Tphraseratio = hypothesis.phraseratio()
+            try:
+                Sphrasecount = hypothesis.fragmentation.phrasecount()
+                Sphraseratio = hypothesis.fragmentation.phraseratio()
+            except AttributeError:
+                pass
+
+    return str(solution), highest, Tphrasecount, Tphraseratio, Sphrasecount, Sphraseratio
+
+
+def searchsolution(hypotheses):
+    """select the best solution, taking into account that multiple fragmentations may generate the same output , and return statistics"""
+    global DEBUG
+    solutions = {} #key = solution string, value = score
+    Tphrasecount = {}
+    Tphraseratio = {}
+    Sphrasecount = {}
+    Sphraseratio = {}
+
+    for hypothesis in hypotheses:
+        hypstring = str(hypothesis)
+        if hypstring in solutions:
+            solutions[hypstring] += (solutions[hypstring] + hypothesis.score()) / 2.0
+        else:
+            solutions[hypstring] = hypothesis.score() 
+        if hypstring in Tphrasecount:
+            Tphrasecount[hypstring] = (Tphrasecount[hypstring] + hypothesis.phrasecount()) / 2.0
+            Tphraseratio[hypstring] = (Tphraseratio[hypstring] + hypothesis.phraseratio()) / 2.0
+        else:
+            Tphrasecount[hypstring] = hypothesis.phrasecount()
+            Tphraseratio[hypstring] = hypothesis.phraseratio()
+
+        try:
+            if hypstring in Sphrasecount:
+                Sphrasecount[hypstring] = (Sphrasecount[hypstring] + hypothesis.fragmentation.phrasecount()) / 2.0
+                Sphraseratio[hypstring] = (Sphraseratio[hypstring] + hypothesis.fragmentation.phraseratio()) / 2.0
+            else:
+                Sphrasecount[hypstring] = hypothesis.fragmentation.phrasecount()
+                Sphraseratio[hypstring] = hypothesis.fragmentation.phraseratio()
+        except AttributeError:
+            pass
+
+    highest = -999999999999999999
+    solution = ""
+    for hypstring, score in solutions.items():
+        if score > highest:
+            highest = score
+            solution = hypstring
+
+    return solution, highest,  Tphrasecount[solution] if solution in Tphrasecount else 0, Tphraseratio[solution] if solution in Tphraseratio else 0.0, Sphrasecount[solution] if solution in Sphrasecount else 0, Sphraseratio[solution] if solution in Sphraseratio else 0.0
+
+
+
+
+##########################################################################################3
+
+if __name__ == "__main__":
+    main()
+
