@@ -10,7 +10,7 @@ echo "This script is still under development, please don't use it yet until full
 
 
 echo "PBMBMT is licensed under the GNU Public License v3. The full text is available in the LICENSE file"
-echo "Dependencies Timbl and PyNLPl are equally licensed under GPLv3. Dependency SRILM is licensed under the SRILM Research Community license. These dependencies will be downloaded automatically if not available yet. Do you agree to this and to all license conditions? [y/n]"
+echo -n "Dependencies Timbl and PyNLPl are equally licensed under GPLv3. Dependency SRILM is licensed under the SRILM Research Community license. These dependencies will be downloaded automatically if not available yet. Do you agree to this and to all license conditions? [y/n] "
 read AGREE
 if [ "$AGREE" != "y" ]; then
     echo "Aborting..."  >&2
@@ -86,6 +86,7 @@ else
         exit 1
     fi
     tar -xzf mtevalscripts.tar.gz
+    rm mtevalscripts.tar.gz
     MTEVALSCRIPTS='mtevalscripts'
 fi
 
@@ -115,6 +116,7 @@ if [ -z "$TIMBL" ]; then TIMBL=`which Timbl | tr -d '\n'`; fi
 if [ -z "$TIMBL" ]; then
     echo "Downloading..."
     mkdir tmp
+    cd tmp
     wget http://ilk.uvt.nl/downloads/pub/software/timbl-6.3.0.tar.gz
     echo "Extracting..."
     tar -xzf timbl-6.3.0.tar.gz
@@ -152,7 +154,7 @@ fi
 
 
 echo "Looking for SRILM Python module..."
-if [ -f pyblpl/lm/srilmcc.so ]; then
+if [ -f pynlpl/lm/srilmcc.so ]; then
     echo "Found!"
 else
 
@@ -169,6 +171,7 @@ else
 
     echo "Downloading SRILM base code (full version available at: http://www-speech.sri.com/projects/srilm/), licensed under SRILM Research Community License)"
     mkdir tmp
+    cd tmp
 
     wget http://ilk.uvt.nl/~mvgompel/srilm-5.10-pymod.tar.gz #Note that this SRILM is downloaded only for compilation of the python module and then removed. If you want to use SRILM for any other purposes, download it from its official site at http://www-speech.sri.com/projects/srilm/  !
     tar -xvzf srilm-5.10-pymod.tar.gz
