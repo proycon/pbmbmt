@@ -25,6 +25,8 @@ if [ -z "$GIT" ]; then GIT=`which git | tr -d '\n'`; fi
 if [ -z "$GIT" ]; then
     echo "Git not found! Please install git first"  >&2
     exit 1
+else
+    echo "...ok"
 fi
 
 echo "Looking for wget"
@@ -32,6 +34,8 @@ if [ -z "$WGET" ]; then WGET=`which wget | tr -d '\n'`; fi
 if [ -z "$WGET" ]; then
     echo "Wget not found! Please install wget first"  >&2
     exit 1
+else
+    echo "...ok"
 fi
 
 
@@ -42,8 +46,9 @@ if [ -z "$PYTHON" ]; then
     echo "Python is not found, please install python 2.5 or above (but < 3.0)"  >&2
     echo "************************************************************************************">&2
     exit 1
+else
+    echo "...ok"
 fi
-    echo "Timbl found: $TIMBL"
 
 echo "Looking for perl"
 if [ -z "$PERL" ]; then PERL=`which perl  | tr -d '\n'`; fi
@@ -52,16 +57,20 @@ if [ -z "$PERL" ]; then
     echo "WARNING: Perl is not found but is required for running the evaluation scripts. We will continue nevertheless but evaluation will fail!"  >&2
     echo "************************************************************************************">&2
     sleep 5
+else
+    echo "...ok"
 fi
 
 
 echo "Looking for java"
-if [ -z "$JAVA" ]; then PERL=`which java | tr -d '\n'`; fi
+if [ -z "$JAVA" ]; then JAVA=`which java | tr -d '\n'`; fi
 if [ -z "$JAVA" ]; then
     echo "************************************************************************************">&2
     echo "WARNING: Java is required for the TER evaluation metric but was not found, we will continue but you won't have TER scores until you install it"  >&2
     echo "************************************************************************************">&2
     sleep 5
+else
+    echo "...ok"
 fi
 
 
