@@ -2,28 +2,33 @@
 #   PBMBMT installation script
 #       by Maarten van Gompel
 
-echo "This script is still under development, please don't use it yet until fully tested"
-sleep 5
+
+
+echo "This script is still under development, please don't use it yet until fully tested!!"
+
+
 
 
 echo "PBMBMT is licensed under the GNU Public License v3. The full text is available in the LICENSE file"
 echo "Dependencies Timbl and PyNLPl are equally licensed under GPLv3. Dependency SRILM is licensed under the SRILM Research Community license. These dependencies will be downloaded automatically if not available yet. Do you agree to this and to all license conditions? [y/n]"
-read $AGREE
+read AGREE
 if [ "$AGREE" != "y" ]; then
     echo "Aborting..."  >&2
     exit 1
 fi
 
 
+
+
 echo "Looking for git"
-if [ -z "$GIT" ]; then GIT=`which git`; fi
+if [ -z "$GIT" ]; then GIT=`which git | tr -d '\n'`; fi
 if [ -z "$GIT" ]; then
     echo "Git not found! Please install git first"  >&2
     exit 1
 fi
 
 echo "Looking for wget"
-if [ -z "$WGET" ]; then WGET=`which wget`; fi
+if [ -z "$WGET" ]; then WGET=`which wget | tr -d '\n'`; fi
 if [ -z "$WGET" ]; then
     echo "Wget not found! Please install wget first"  >&2
     exit 1
@@ -31,7 +36,7 @@ fi
 
 
 echo "Looking for python"
-if [ -z "$PYTHON" ]; then PYTHON=`which python`; fi
+if [ -z "$PYTHON" ]; then PYTHON=`which python | tr -d '\n'`; fi
 if [ -z "$PYTHON" ]; then
     echo "************************************************************************************">&2
     echo "Python is not found, please install python 2.5 or above (but < 3.0)"  >&2
@@ -41,7 +46,7 @@ fi
     echo "Timbl found: $TIMBL"
 
 echo "Looking for perl"
-if [ -z "$PERL" ]; then PERL=`which perl`; fi
+if [ -z "$PERL" ]; then PERL=`which perl  | tr -d '\n'`; fi
 if [ -z "$PERL" ]; then
     echo "************************************************************************************">&2
     echo "WARNING: Perl is not found but is required for running the evaluation scripts. We will continue nevertheless but evaluation will fail!"  >&2
@@ -51,7 +56,7 @@ fi
 
 
 echo "Looking for java"
-if [ -z "$JAVA" ]; then PERL=`which java`; fi
+if [ -z "$JAVA" ]; then PERL=`which java | tr -d '\n'`; fi
 if [ -z "$JAVA" ]; then
     echo "************************************************************************************">&2
     echo "WARNING: Java is required for the TER evaluation metric but was not found, we will continue but you won't have TER scores until you install it"  >&2
@@ -97,7 +102,7 @@ fi
 
 
 echo "Looking for Timbl..."
-if [ -z "$TIMBL" ]; then TIMBL=`which timbl`; fi
+if [ -z "$TIMBL" ]; then TIMBL=`which timbl | tr -d '\n'`; fi
 if [ -z "$TIMBL" ]; then
     echo "Downloading..."
     mkdir tmp
@@ -107,7 +112,7 @@ if [ -z "$TIMBL" ]; then
     cd timbl-6.3.0
 
     echo -n "Where do you want to install Timbl? [/usr/local/] "
-    read $TIMBLINSTALLDIR
+    read TIMBLINSTALLDIR
     mkdir -p $TIMBLINSTALLDIR
 
     ./configure --prefix=$TIMBLINSTALLDIR
