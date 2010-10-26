@@ -111,7 +111,7 @@ fi
 
 
 echo "Looking for Timbl..."
-if [ -z "$TIMBL" ]; then TIMBL=`which timbl | tr -d '\n'`; fi
+if [ -z "$TIMBL" ]; then TIMBL=`which Timbl | tr -d '\n'`; fi
 if [ -z "$TIMBL" ]; then
     echo "Downloading..."
     mkdir tmp
