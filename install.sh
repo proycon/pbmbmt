@@ -189,12 +189,15 @@ else
     
     cd ../../
     cd pynlpl/lm
+    ln -s ../../tmp/srilm-5.10-pymod srilm
 
     g++ -fPIC -shared -I/usr/include/python$PYTHONVERSION -lpython$PYTHONVERSION -I$SRILM/src -I$SRILM/include -lboost_python srilm.cc $SRILMLIBS/liboolm.a $SRILMLIBS/libdstruct.a $SRILMLIBS/libmisc.a -o srilmcc.so #this assumes python libraries are in /usr/include/python !
     if [ $? != 0 ]; then
         echo "Error, Compilation of SRILM Python Module compilation! May be due to missing libboost? Please inspect error output." >&2
         exit 1
     fi
+
+    rm srilm
 
     cd ../..
     rm -Rf tmp
