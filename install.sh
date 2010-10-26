@@ -117,7 +117,11 @@ if [ -z "$TIMBL" ]; then
     echo "Downloading..."
     mkdir tmp
     cd tmp
-    wget http://ilk.uvt.nl/downloads/pub/software/timbl-6.3.0.tar.gz
+    if [ -f timbl-6.3.0.tar.gz ]; then
+        echo "Download already done.."
+    else
+        wget http://ilk.uvt.nl/downloads/pub/software/timbl-6.3.0.tar.gz
+    fi
     echo "Extracting..."
     tar -xzf timbl-6.3.0.tar.gz
     cd timbl-6.3.0
@@ -173,7 +177,11 @@ else
     mkdir tmp
     cd tmp
 
-    wget http://ilk.uvt.nl/~mvgompel/srilm-5.10-pymod.tar.gz #Note that this SRILM is downloaded only for compilation of the python module and then removed. If you want to use SRILM for any other purposes, download it from its official site at http://www-speech.sri.com/projects/srilm/  !
+    if [ -f srilm-5.10-pymod.tar.gz ]; then
+        echo "Download already done.."
+    else
+        wget http://ilk.uvt.nl/~mvgompel/srilm-5.10-pymod.tar.gz #Note that this SRILM is downloaded only for compilation of the python module and then removed. If you want to use SRILM for any other purposes, download it from its official site at http://www-speech.sri.com/projects/srilm/  !
+    fi
     tar -xvzf srilm-5.10-pymod.tar.gz
     cd srilm-5.10-pymod
     export SRILM=`pwd`
@@ -193,7 +201,7 @@ else
 
     g++ -fPIC -shared -I/usr/include/python$PYTHONVERSION -lpython$PYTHONVERSION -I$SRILM/src -I$SRILM/include -lboost_python srilm.cc $SRILMLIBS/liboolm.a $SRILMLIBS/libdstruct.a $SRILMLIBS/libmisc.a -o srilmcc.so #this assumes python libraries are in /usr/include/python !
     if [ $? != 0 ]; then
-        echo "Error, Compilation of SRILM Python Module compilation! May be due to missing libboost? Please inspect error output." >&2
+        echo "Error, Compilation of SRILM Python Module compilation! May be due to missing libboost-python headers? Please inspect error output." >&2
         exit 1
     fi
 
