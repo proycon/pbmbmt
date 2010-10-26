@@ -2,4 +2,37 @@ PBMBMT INSTALLATION
 ======================
 
 
-Installation of PBMBMT is fairly complex due to the many dependencies, an installation script is being written to facilitate installation. Please wait for the release.
+Installation of PBMBMT is fairly complex due to the many dependencies, an installation script install.sh has been written to facilitate installation. It will automatically download and compile the following necessary dependencies:
+
+by ILK, Tilburg University:
+- PyNLPl: Python Natural Language Processing Library
+- Timbl - Tilburg Memory Based Learner
+
+3rd-party:
+- SRILM (only for compilation of a necessary python module)
+- MT Evaluation Scripts (Matrex (BLEU, WER, PER), NIST, METEOR, TER)
+
+Note that PBMBMT runs on unix systems only. Windows is not supported at all, nor is PBMBMT tested on Mac OS X, but with considerable effort the latter *might* be achievable.
+
+The following dependencies have to be installed through your distribution, package names for Debian/Ubuntu-based systems are provided explicitly:
+
+- git                           $ sudo apt-get install git-core
+- wget                          $ sudo apt-get install wget
+- python *and* python headers   $ sudo apt-get install python python-dev
+- libboost-python               $ sudo apt-get install libboost-python libboost-python-dev
+- perl                          $ sudo apt-get install perl
+ (needed for computation of evaluation metrics)
+- java                          $ sudo apt-get install java
+ (only necessary for computation of TER score, may be safely skipped if you don't care about TER)
+
+
+== INSTRUCTIONS ==
+
+Grab PBMBMT from github if you have not already done so, and install it. Everything will be installed locally in the pbmbmt/ directory, except for Timbl.
+
+$ git clone git@github.com:proycon/pbmbmt.git
+$ cd pbmbmt
+$ ./install.sh
+
+Follow the instructions in the installation script
+
