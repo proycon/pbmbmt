@@ -1,7 +1,19 @@
 #!/bin/bash
+#   PBMBMT installation script
+#       by Maarten van Gompel
 
 echo "This script is still under development, please don't use it yet until fully tested"
-exit 1
+sleep 5
+
+
+echo "PBMBMT is licensed under the GNU Public License v3. The full text is available in the LICENSE file"
+echo "Dependencies Timbl and PyNLPl are equally licensed under GPLv3. Dependency SRILM is licensed under the SRILM Research Community license. These dependencies will be downloaded automatically if not available yet. Do you agree to this and to all license conditions? [y/n]"
+read $AGREE
+if [ "$AGREE" != "y" ]; then
+    echo "Aborting..."  >&2
+    exit 1
+fi
+
 
 echo "Looking for git"
 if [ -z "$GIT" ]; then GIT=`which git`; fi
@@ -13,7 +25,7 @@ fi
 echo "Looking for wget"
 if [ -z "$WGET" ]; then WGET=`which wget`; fi
 if [ -z "$WGET" ]; then
-    echo " Wget not found! Please install wget first"  >&2
+    echo "Wget not found! Please install wget first"  >&2
     exit 1
 fi
 
@@ -129,17 +141,7 @@ echo "Looking for SRILM Python module..."
 if [ -f pyblpl/lm/srilmcc.so ]; then
     echo "Found!"
 else
-    echo "Downloading SRILM base code (full version available at: http://www-speech.sri.com/projects/srilm/), licensed under SRILM Research Community License)"
-    mkdir tmp
 
-    wget http://ilk.uvt.nl/~mvgompel/srilm-5.10-pymod.tar.gz
-    tar -xvzf srilm-5.10-pymod.tar.gz
-    cd srilm-5.10-pymod
-    export SRILM=`pwd`
-    MACHINE_TYPE="i686"
-    make MACHINE_TYPE=$MACHINE_TYPE NO_TCL=X
-    export SRILMLIBS=$SRILM/lib/$MACHINE_TYPE
-    
     if [ -d /usr/include/python2.6 ]; then
         PYTHONVERSION="2.6"
     elif [ -d /usr/include/python2.7 ]; then
@@ -151,17 +153,37 @@ else
         exit 1
     fi
 
-    g++ -fPIC -shared -I/usr/include/python$PYTHONVERSION -lpython$PYTHONVERSION -I$SRILM/src -I$SRILM/include -lboost_python srilm.cc $SRILMLIBS/liboolm.a $SRILMLIBS/libdstruct.a $SRILMLIBS/libmisc.a -o srilmcc.so #this assumes python libraries are in /usr/include/python !
+    echo "Downloading SRILM base code (full version available at: http://www-speech.sri.com/projects/srilm/), licensed under SRILM Research Community License)"
+    mkdir tmp
 
-    cd ..
+    wget http://ilk.uvt.nl/~mvgompel/srilm-5.10-pymod.tar.gz #Note that this SRILM is downloaded only for compilation of the python module and then removed. If you want to use SRILM for any other purposes, download it from its official site at http://www-speech.sri.com/projects/srilm/  !
+    tar -xvzf srilm-5.10-pymod.tar.gz
+    cd srilm-5.10-pymod
+    export SRILM=`pwd`
+    MACHINE_TYPE="i686" #also for x86_64 !
+
+    make MACHINE_TYPE=$MACHINE_TYPE NO_TCL=X
+    if [ $? != 0 ]; then
+        echo "Error, SRILM compilation failed! Please inspect error output." >&2
+        exit 1
+    fi
+
+    export SRILMLIBS=$SRILM/lib/$MACHINE_TYPE
+    
+    cd ../../
+    cd pynlpl/lm
+
+    g++ -fPIC -shared -I/usr/include/python$PYTHONVERSION -lpython$PYTHONVERSION -I$SRILM/src -I$SRILM/include -lboost_python srilm.cc $SRILMLIBS/liboolm.a $SRILMLIBS/libdstruct.a $SRILMLIBS/libmisc.a -o srilmcc.so #this assumes python libraries are in /usr/include/python !
+    if [ $? != 0 ]; then
+        echo "Error, Compilation of SRILM Python Module compilation! May be due to missing libboost? Please inspect error output." >&2
+        exit 1
+    fi
+
+    cd ../..
     rm -Rf tmp
 
 fi
 
-if [ -z "$TIMBL" ]; then TIMBL=`which timbl`; fi
-if [ -z "$TIMBL" ]; then
 
-else
-    echo "Timbl found: $TIMBL"
-fi
 
+echo "All done!"

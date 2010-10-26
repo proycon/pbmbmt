@@ -24,7 +24,7 @@ from pynlpl.formats.moses import PhraseTable
 
 
 
-VERSION = '0.33.0'
+VERSION = '0.34.0'
 
 DEBUG=0
 DISTORTION_CONSTANT=0.25
