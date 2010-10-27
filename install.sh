@@ -4,11 +4,6 @@
 
 
 
-echo "This script is still under development, please don't use it yet until fully tested!!"
-
-
-
-
 echo "PBMBMT is licensed under the GNU Public License v3. The full text is available in the LICENSE file"
 echo -n "Dependencies Timbl and PyNLPl are equally licensed under GPLv3. Dependency SRILM is licensed under the SRILM Research Community license. These dependencies will be downloaded automatically if not available yet. Do you agree to this and to all license conditions? [y/n] "
 read AGREE
@@ -212,6 +207,25 @@ else
 
 fi
 
+echo "Looking for sample data..."
+if [ -d data ]; then
+    echo "Found!"
+else
+    mkdir data
 
+    echo "Downloading sample data (based on OpenSubtitles Corpus from the OPUS project: http://urd.let.rug.nl/tiedeman/OPUS/ )"
+    wget http://ilk.uvt.nl/mbmt/pbmbmt/pbmbmt-sample-data.tar.bz2
+    tar -xvjf pbmbmt-sample-data.tar.bz2
+    rm pbmbmt-sample-data.tar.bz2
+    cd ..
+fi
+
+echo "Writing PBMBMT configuration..."
+
+PBMBMTDIR=`pwd`
+echo "PBMBMTDIR=\"$PBMBMTDIR\"" > config.py
+echo "MATREXDIR=\"$PBMBMTDIR/mtevalscripts\"" >> config.py
+echo "EXPDIR=\"$PBMBMTDIR/data\"" >> config.py
+echo "TIMBL=\"$TIMBL\"" >> config.py
 
 echo "All done!"
