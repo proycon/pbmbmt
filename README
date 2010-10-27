@@ -14,8 +14,7 @@ We present PBMBMT, a system for phrase-based memory-based machine translation. T
 
 The system is available under the GNU Public License v3 and is suited primarily for research purposes. 
 
-For installation instructions, see INSTALL
-For usage instructions, see USAGE
+For installation instructions see INSTALL or the website, for usage instructions, we refer only to the webpage at http://ilk.uvt.nl/mbmt/pbmbmt , which contains a how-to.
 
 The theory is extensively described in the following publications, reading the first is strongly recommended before attempting to use the system!
 

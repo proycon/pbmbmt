@@ -1,4 +1,5 @@
-PBMBMT INSTALLATION
+======================
+ PBMBMT INSTALLATION
 ======================
 
 
@@ -25,6 +26,7 @@ The following dependencies have to be installed through your distribution, packa
 - java                          $ sudo apt-get install java
  (only necessary for computation of TER score, may be safely skipped if you don't care about TER)
 
+If you want to work with your own training data from scratch, then you also need to install GIZA++ and Moses, which are required for the generation of respectively the word-alignment data and the phrase-translation table. SRILM is required if you want to generated your own language models.
 
 == INSTRUCTIONS ==
 
