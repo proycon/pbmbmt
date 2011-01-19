@@ -229,4 +229,4 @@ echo "TIMBL=\"$TIMBL\"" >> config.py
 
 echo "All done!"
 echo "Want to try a test on the sample data? Try this:"
-echo " $ ./pbmbmt.py -- OpenSub-dutch OpenSub-english test exp1"
+echo " $ ./pbmbmt.py --Dsrilm=OpenSub-english.lm -- OpenSub-dutch OpenSub-english test exp1"
