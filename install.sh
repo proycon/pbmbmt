@@ -217,7 +217,6 @@ else
     wget http://ilk.uvt.nl/mbmt/pbmbmt/pbmbmt-sample-data.tar.bz2
     tar -xvjf pbmbmt-sample-data.tar.bz2
     rm pbmbmt-sample-data.tar.bz2
-    cd ..
 fi
 
 echo "Writing PBMBMT configuration..."
@@ -229,3 +228,5 @@ echo "EXPDIR=\"$PBMBMTDIR/data\"" >> config.py
 echo "TIMBL=\"$TIMBL\"" >> config.py
 
 echo "All done!"
+echo "Want to try a test on the sample data? Try this:"
+echo " $ ./pbmbmt.py -- OpenSub-dutch OpenSub-english test exp1"
