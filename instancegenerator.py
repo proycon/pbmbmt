@@ -14,10 +14,10 @@ def validate_alignment(alignment, begin,length,tbegin,tlength):
             if (alignment[i] < tbegin) or (alignment[i] >= tbegin+tlength):
                 return False #alignment goes out of bounds, discard
     return True #alignment is valid
-    
 
 
-def get_train_phrases_phrasetable(sourcewords, targetwords, alignment, phrasetable, strict=True, MAXPHRASELENGTH=6, MINPHRASELENGTH=2,bestonly=True):    
+
+def get_train_phrases_phrasetable(sourcewords, targetwords, alignment, phrasetable, strict=True, MAXPHRASELENGTH=6, MINPHRASELENGTH=2,bestonly=True):
     """Extract phrases for training using a Phrase Table (P) and  Word Alignment (A)"""
 
     sourcelength = len(sourcewords)
@@ -25,7 +25,7 @@ def get_train_phrases_phrasetable(sourcewords, targetwords, alignment, phrasetab
     #Generate possible phrases and see if anything matches with the phrasetable
     for begin in xrange(0,sourcelength):
        for length in xrange(MINPHRASELENGTH,sourcelength - begin + 1):
-        if length > MAXPHRASELENGTH: 
+        if length > MAXPHRASELENGTH:
             break
         phrase = sourcewords[begin:begin+length]
         phrasestring = " ".join(phrase)
@@ -38,14 +38,19 @@ def get_train_phrases_phrasetable(sourcewords, targetwords, alignment, phrasetab
 
         if phrasestring in phrasetable:
           #we have a match, now check if the targetphrase exists as well
-          for translation, Pst, Pts, null_alignments in phrasetable[phrasestring]:
+          #for translation, Pst, Pts, null_alignments in phrasetable[phrasestring]:
+          for translation, scores in phrasetable[phrasestring]:
+            Pst = scores[0]
+            Pts = scores[2]
+            null_alignments = 0
+
             translation = translation.split(" ")
             tlength = len(translation)
 
             for tbegin in xrange(0,targetlength):
               if targetwords[tbegin:tbegin+tlength] == translation:
                 #found!
-                if not strict: 
+                if not strict:
                     aligned_phrases.append( (tbegin,tlength,Pst,Pts,null_alignments) )
                 elif validate_alignment(alignment, begin,length,tbegin,tlength): #strict mode, validate
                     aligned_phrases.append( (tbegin,tlength,Pst,Pts,null_alignments) )
@@ -54,7 +59,7 @@ def get_train_phrases_phrasetable(sourcewords, targetwords, alignment, phrasetab
             if len(aligned_phrases) > 1:
 
                 #ok, we have a problem. We have multiple aligned phrases for the same input sample. Outputting the same features with different classes would not be very sensible, so we try to select the 'best' phrase:
-                if bestonly:                        
+                if bestonly:
                     best_score = max([  x[3] for x in aligned_phrases ]) #Uses Pts
                     aligned_phrases = [ x for x in aligned_phrases if x[3] == best_score ]
 
@@ -62,7 +67,7 @@ def get_train_phrases_phrasetable(sourcewords, targetwords, alignment, phrasetab
                         least_null_alignments = min([ x[4] for x in aligned_phrases ])
                         aligned_phrases = [ x for x in aligned_phrases if x[4] == least_null_alignments ]
 
-                    tbegin, tlength, Pst, Pts, null_alignments = aligned_phrases[0] 
+                    tbegin, tlength, Pst, Pts, null_alignments = aligned_phrases[0]
                     yield begin,length,tbegin,tlength, Pst, Pts
                 else:
                     for tbegin, tlength, Pst, Pts, null_alignments in aligned_phrases:
@@ -70,15 +75,15 @@ def get_train_phrases_phrasetable(sourcewords, targetwords, alignment, phrasetab
 
                 #(if we still have multiple options we now just grab the first one)
             else:
-                tbegin, tlength, Pst, Pts, null_alignments = aligned_phrases[0] 
+                tbegin, tlength, Pst, Pts, null_alignments = aligned_phrases[0]
                 yield begin,length,tbegin,tlength, Pst, Pts
 
 
-            
-        
-        
 
-                
+
+
+
+
 def get_train_phrases_phraselist(sourcewords,targetwords,alignment,phraselist_source, phraselist_target=None, MAXPHRASELENGTH = 6):
     """Extract phrases for training using a Phraselist"""
 
@@ -87,7 +92,7 @@ def get_train_phrases_phraselist(sourcewords,targetwords,alignment,phraselist_so
     #Generate possible phrases and see if anything matches with the phrasetable
     for begin in xrange(0,sourcelength - 1):
        for length in xrange(2,sourcelength - begin):
-        if length > MAXPHRASELENGTH: 
+        if length > MAXPHRASELENGTH:
             break
         phrase = sourcewords[begin:begin+length]
         phrasestring = " ".join(phrase)
@@ -95,7 +100,7 @@ def get_train_phrases_phraselist(sourcewords,targetwords,alignment,phraselist_so
         if phrasestring in phraselist_source:
             phrase_alignments = [] #will hold a of alignments for the phrase
             #can we estimate an aligned phrase based on the word-alignment?
-            for i in xrange(begin,begin+length):                
+            for i in xrange(begin,begin+length):
                 if alignment[i] != None:
                     phrase_alignments.append(alignment[i])
                 #else:
@@ -103,7 +108,7 @@ def get_train_phrases_phraselist(sourcewords,targetwords,alignment,phraselist_so
                 #    phrase_alignments = []
                 #    break
             #print "ALIGNMENT DEBUG: ", phrase_alignments
-            if phrase_alignments: #do we have a list of alignments? 
+            if phrase_alignments: #do we have a list of alignments?
                 tbegin = min(phrase_alignments)
                 tend = max(phrase_alignments)
                 tlength = (tend - tbegin) + 1
@@ -119,7 +124,7 @@ def get_train_phrases_phraselist(sourcewords,targetwords,alignment,phraselist_so
                     accept = False
                     if not phraselist_target:
                         #all is okay, accept the aligned phrase
-                        accept = True        
+                        accept = True
                         #print >> sys.stderr, "ALIGNMENT FOUND: ",phrasestring, " -> ", aligned_phrase_string,"\t",phrase_alignments
                     else:
                         #accept the aligned phrase if it occurs in the target phraselist
@@ -128,7 +133,7 @@ def get_train_phrases_phraselist(sourcewords,targetwords,alignment,phraselist_so
                                 accept = True
                     if accept:
                         yield begin,length,tbegin,tlength
-                
+
 
 def align_chunks(sourcewords, targetwords, wordalignment,source_chunks,target_chunks):
 
@@ -151,7 +156,7 @@ def align_chunks(sourcewords, targetwords, wordalignment,source_chunks,target_ch
 
     #compute reverse of word alignments
     rev_wordalignment = []
-    for j in xrange(0,len(targetwords)):    
+    for j in xrange(0,len(targetwords)):
         sourcealigned = None
         for i, aligned in enumerate(wordalignment):
             if aligned == j:
@@ -185,7 +190,7 @@ def align_chunks(sourcewords, targetwords, wordalignment,source_chunks,target_ch
         if bestscore > 0:
             chunk_alignments.append(bestalign)
         else:
-            chunk_alignments.append(None)    
+            chunk_alignments.append(None)
 
     return chunk_alignments
 
@@ -200,7 +205,7 @@ def get_train_phrases_markerbased(sourcewords, targetwords, alignment, markerlis
 
     chunk_alignment = align_chunks(sourcewords,targetwords,alignment,source_chunks, target_chunks)
 
-    for i,(begin,length) in enumerate(source_chunks):            
+    for i,(begin,length) in enumerate(source_chunks):
         if chunk_alignment[i] and length <= MAXPHRASELENGTH:
             tbegin,tlength = target_chunks[chunk_alignment[i]]
             #print "DEBUG: ", sourcewords[begin:begin+length], " --> ", targetwords[tbegin:tbegin+tlength] #DEBUG
@@ -218,27 +223,27 @@ def get_train_phrases_markerbased(sourcewords, targetwords, alignment, markerlis
                     if not (alignment[j] >= tbegin and alignment[j] < tbegin+tlength):
                         aligns = False
                         break
-                else: 
+                else:
                     nullalignments += 1
             aligns = (aligns and nullalignments < length)
             if aligns:
                 #print "DEBUG: ", sourcewords[begin:begin+length], " --> ", targetwords[tbegin:tbegin+tlength] #DEBUG
-                yield begin,length,tbegin,tlength                                
+                yield begin,length,tbegin,tlength
     """
 
-def get_test_phrases_markerbased(words, markerlist_source, MAXPHRASELENGTH=9):                         
+def get_test_phrases_markerbased(words, markerlist_source, MAXPHRASELENGTH=9):
     for begin,length in get_chunks(words,markerlist_source):
         if length <= MAXPHRASELENGTH:
             yield begin, length
 
 
-            
+
 def get_test_phrases_phrasetable(words, phrasetable,  MAXPHRASELENGTH=6, MINPHRASELENGTH=2):
     #Generate possible phrases and see if anything matches with the phrasetable
     words_len = len(words)
     for begin in xrange(0,words_len):
        for length in xrange(MINPHRASELENGTH,words_len - begin + 1):
-        if length > MAXPHRASELENGTH: 
+        if length > MAXPHRASELENGTH:
             break
 
         phrase = words[begin:begin+length]
@@ -258,7 +263,7 @@ def get_baseline_phrasetable(words, phrasetable,  MAXPHRASELENGTH=6, MINPHRASELE
     words_len = len(words)
     for begin in xrange(0,words_len):
        for length in xrange(MINPHRASELENGTH,words_len - begin + 1):
-        if length > MAXPHRASELENGTH: 
+        if length > MAXPHRASELENGTH:
             break
 
         phrase = words[begin:begin+length]
@@ -267,13 +272,13 @@ def get_baseline_phrasetable(words, phrasetable,  MAXPHRASELENGTH=6, MINPHRASELE
         if phrasestring in phrasetable:
             #for target,Pst,Pts,null_alignments in phrasetable[phrasestring]:
             yield begin, length,phrasetable[phrasestring]
-            
+
 def get_test_phrases_phraselist(words, phraselist,  MAXPHRASELENGTH=6, MINPHRASELENGTH=2):
     #Generate possible phrases and see if anything matches with the phrasetable
     words_len = len(words)
     for begin in xrange(0,words_len - 1):
        for length in xrange(MINPHRASELENGTH,words_len - begin):
-        if length > MAXPHRASELENGTH: 
+        if length > MAXPHRASELENGTH:
             break
 
         phrase = words[begin:begin+length]
@@ -428,7 +433,7 @@ def make_test_ngram(words,begin,length, nleft=1,nright=1, return_nfocus=False, p
                 pos_focus = " ".join(pos_focus)
             if lemma_focus:
                 lemma_focus = " ".join(lemma_focus)
-        features_rightcontext = " ".join(get_right_context(words,begin+length,nright))        
+        features_rightcontext = " ".join(get_right_context(words,begin+length,nright))
 
         if alignprobfeature:
             instance += str(score) + " "
@@ -495,7 +500,7 @@ def make_baseline_ngram(words,translations,begin,length, nleft=1,nright=1, retur
                 pos_focus = " ".join(pos_focus)
             if lemma_focus:
                 lemma_focus = " ".join(lemma_focus)
-        features_rightcontext = " ".join(get_right_context(words,begin+length,nright))        
+        features_rightcontext = " ".join(get_right_context(words,begin+length,nright))
 
 
         if features_leftcontext:
@@ -533,7 +538,7 @@ def make_baseline_ngram(words,translations,begin,length, nleft=1,nright=1, retur
             return instance
 
 
-    
+
 def get_ngrams(words,n=3,eos=True):
     if eos:    #include ngrams with begin/end-of-sentence markers?
         begin = 0
